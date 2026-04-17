@@ -1,8 +1,8 @@
 // !!!this file is auto generated.!!! 
 
-import { PrismaClient } from '@prisma/client'
+import type { PrismaClient } from '../generated/prisma/client'
 
-const prisma = new PrismaClient()
+declare const prisma: PrismaClient
 
 
 // @ts-expect-error args are required

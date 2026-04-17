@@ -1,23 +1,42 @@
-# prisma-where-required
+# prisma-where-required (Prisma 7 fork)
+
+Fork of [@kz-d/prisma-where-required](https://github.com/kz-d/prisma-where-required)
+adapted to Prisma 7's new `prisma-client` generator. Original design and
+implementation by kz-d; this fork updates the generator to target the
+per-model file layout produced by the Rust-free Prisma client.
+
+## What changed vs the original
+- `requiresGenerators` switched from `prisma-client-js` to `prisma-client`.
+- The generator now reads the client's custom `output` path from
+  `options.otherGenerators` instead of `node_modules/.prisma/client`.
+- The convertor patches `{output}/models/{ModelName}.ts` per model instead
+  of a single `index.d.ts`, since Prisma 7 emits one file per model.
+- Type references to `WhereInput` inside the same file are matched both as
+  `ModelWhereInput` and the namespace-qualified `Prisma.ModelWhereInput`.
+
+No schema-side API changes — `/// @where-required` and the
+`where: { organizations: undefined }` escape hatch work identically.
 
 ## Overview
 prisma-where-required is a utility that enforces certain fields to be mandatory in the 'where' clause when using Prisma. 
 This tool was primarily created with multi-tenant systems or to perform a soft delete in mind.
 
-This extension requires Prisma 4.0.0 or higher.
+This fork requires **Prisma 7** and the `prisma-client` generator provider.
 
 
 ## Usage
-1. `npm i @kz-d/prisma-where-required -D`
+1. `npm i @gusevp/prisma-where-required -D`
 
 2. Add the following to your schema.prisma file:
 
 ```
-generator where-required {
+generator whereRequired {
   provider = "prisma-where-required"
-  nodeModulePath = "node_modules"
 }
 ```
+
+The generator auto-discovers the client's output path — no `nodeModulePath`
+is required (it was a v4/v5 artifact).
 
 3. Add /// @where-required to the columns you want to make mandatory:
 

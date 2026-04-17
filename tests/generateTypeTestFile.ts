@@ -2,8 +2,10 @@ import fs from "fs";
 
 function generateTypeTestFile(outputPath: string) {
     let content = `// !!!this file is auto generated.!!! \n\n`
-    content += `import { PrismaClient } from '@prisma/client'\n\n`
-    content += `const prisma = new PrismaClient()\n\n`
+    // Type-only harness: the PrismaClient constructor in v7 requires an adapter,
+    // which we don't need for compile-time type assertions.
+    content += `import type { PrismaClient } from '../generated/prisma/client'\n\n`
+    content += `declare const prisma: PrismaClient\n\n`
 
     const targetActions = ['findMany', 'findFirst', 'findFirstOrThrow', 'deleteMany', 'count'] 
 

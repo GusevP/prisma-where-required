@@ -1,11 +1,14 @@
 {
-  "name": "@kz-d/prisma-where-required",
+  "name": "@gusevp/prisma-where-required",
   "version": "0.0.0-semantically-released",
-  "description": "Make certain fields required in where clause for Prisma",
+  "description": "Make certain fields required in where clause for Prisma (Prisma 7 fork)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
-  "author": "kz-d",
+  "author": "GusevP",
+  "contributors": [
+    "kz-d (original author)"
+  ],
   "bin": {
     "prisma-where-required": "./dist/generator.js"
   },
@@ -14,14 +17,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kz-d/prisma-where-required"
+    "url": "https://github.com/GusevP/prisma-where-required"
   },
-  "keywords": ["prisma"],
+  "keywords": ["prisma", "prisma-7"],
   "scripts": {
     "build": "tsc",
     "generate:prisma": "prisma generate",
     "generate:typeTestFile": "ts-node tests/generateTypeTestFile.ts",
-    "test": "npx prisma generate && tsc tests/*.test.ts --noEmit",
+    "test": "npx prisma generate && tsc tests/*.test.ts --noEmit --esModuleInterop --moduleResolution node --target es2020 --strict --skipLibCheck",
     "lint": "eslint ./src"
   },
   "devDependencies": {
@@ -29,17 +32,17 @@
     "@typescript-eslint/eslint-plugin": "^6.2.1",
     "@typescript-eslint/parser": "^6.2.1",
     "eslint": "^8.46.0",
-    "prisma": "^4.16.2",
+    "prisma": "^7.0.0",
     "ts-node": "^10.9.1",
     "typescript": "^5.1.6",
-    "@prisma/client": "^5.0"
+    "@prisma/client": "^7.0.0"
   },
   "dependencies": {
-    "@prisma/generator-helper": "^5.0",
-    "@prisma/internals": "^5.0",
-    "ts-morph": "^19.0.0"
+    "@prisma/generator-helper": "^7.0.0",
+    "@prisma/internals": "^7.0.0",
+    "ts-morph": "^23.0.0"
   },
   "peerDependencies": {
-    "@prisma/client": ">= 4.0"
+    "@prisma/client": ">= 7.0"
   }
 }
