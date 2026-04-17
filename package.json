@@ -1,9 +1,7 @@
 {
   "name": "@gusevp/prisma-where-required",
-  "version": "0.0.0-semantically-released",
+  "version": "0.1.0",
   "description": "Make certain fields required in where clause for Prisma (Prisma 7 fork)",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "license": "MIT",
   "author": "GusevP",
   "contributors": [
@@ -12,6 +10,9 @@
   "bin": {
     "prisma-where-required": "./dist/generator.js"
   },
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -19,7 +20,10 @@
     "type": "git",
     "url": "https://github.com/GusevP/prisma-where-required"
   },
-  "keywords": ["prisma", "prisma-7"],
+  "keywords": [
+    "prisma",
+    "prisma-7"
+  ],
   "scripts": {
     "build": "tsc",
     "prepare": "tsc",
