@@ -1,30 +1,38 @@
-# prisma-where-required (Prisma 7 fork)
+# prisma-where-required
 
-Fork of [@kz-d/prisma-where-required](https://github.com/kz-d/prisma-where-required)
-adapted to Prisma 7's new `prisma-client` generator. Original design and
-implementation by kz-d; this fork updates the generator to target the
-per-model file layout produced by the Rust-free Prisma client, and — as of
-v1.1.0 — re-architects how the required-field constraint is applied.
+A Prisma 7 generator that makes selected fields required in `where`
+clauses — primarily for multi-tenant scoping and soft-delete enforcement
+at the type level.
 
-## What changed vs the original
-- `requiresGenerators` switched from `prisma-client-js` to `prisma-client`.
-- The generator now reads the client's custom `output` path from
-  `options.otherGenerators` instead of `node_modules/.prisma/client`.
-- The convertor patches `{output}/models/{ModelName}.ts` per model instead
-  of a single `index.d.ts`, since Prisma 7 emits one file per model.
-- Type references to `WhereInput` inside the same file are matched both as
-  `ModelWhereInput` and the namespace-qualified `Prisma.ModelWhereInput`.
+Originally based on [@kz-d/prisma-where-required](https://github.com/kz-d/prisma-where-required).
+The core idea (patching Prisma's generated types to force a field into
+`where`) comes from kz-d's original work. This package has since been
+rewritten for Prisma 7's new `prisma-client` generator, re-architected
+around a `{Model}WhereInputStrict` sibling type (v1.1.0), and extended
+with configurable strictness levels (v2.0.0).
+
+## What's new in v2.0.0
+- **`strictness` generator option.** New `basic` | `relations` | `includes`
+  knob gates how many `where` surfaces get rewritten. See Strictness levels
+  below.
+- **Breaking default change.** The default dropped from the v1.1.0
+  `includes` baseline to `relations`. Nested `include.*.where`,
+  `select.*.where`, and `_count.select.*.where` are no longer enforced by
+  default — opt back in with `strictness = "includes"`. See Migrating from
+  v1.1 to v2.0 below.
 
 ## What's new in v1.1.0
 - **Strict alias architecture.** Prisma's `{Model}WhereInput` is left pristine.
   The generator emits a sibling `{Model}WhereInputStrict` that carries the
-  required-field constraint, and rewrites every `where:` reference in action
-  args, nested include args, and `_count` args to point at it.
-- **Fixes a tenant leak.** Nested relation args
-  (`include: { posts: { where: {} } }`, `_count.select.posts.where`),
-  relation filters (`some / every / none / is / isNot`), and nested
-  `delete` / `disconnect` on to-one updates now enforce required fields.
-  In v0.1 they bypassed the check silently.
+  required-field constraint, and rewrites `where:` references to point at it.
+  In v2.0 the set of rewritten surfaces is controlled by `strictness` — see
+  the table below.
+- **Fixes a tenant leak.** Relation filters (`some / every / none / is /
+  isNot`), and nested `delete` / `disconnect` on to-one updates now enforce
+  required fields (at `strictness = "relations"` and above, the v2.0
+  default). Nested relation args (`include: { posts: { where: {} } }`,
+  `_count.select.posts.where`) also enforce required fields at
+  `strictness = "includes"`. In v0.1 they bypassed the check silently.
 - **OR / AND / NOT are permissive again.** Combinators continue to reference
   the permissive `{Model}WhereInput`, so the `{ organizationId: undefined }`
   workaround is no longer needed inside combinator branches.
@@ -32,11 +40,72 @@ v1.1.0 — re-architects how the required-field constraint is applied.
   required-field name to every model that has it as a scalar, additive with
   `/// @where-required`.
 
+## Strictness levels
+
+In v2.0, the generator accepts a `strictness` option that controls how
+aggressively `where` surfaces are rewritten to `{Model}WhereInputStrict`:
+
+```
+generator whereRequired {
+  provider   = "prisma-where-required"
+  strictness = "relations" // "basic" | "relations" | "includes"
+}
+```
+
+| Level | What it enforces |
+|---|---|
+| `basic` | Top-level action args only (`findMany`, `findFirst`, `count`, `aggregate`, `groupBy`, `updateMany`, `deleteMany`). |
+| `relations` *(default)* | `basic` + relation filters (`some` / `every` / `none` / `is` / `isNot` and the XOR-direct relation shorthand) + nested to-one `delete` / `disconnect`. |
+| `includes` | `relations` + every remaining `where: {Model}WhereInput` position — nested `include.*.where`, `select.*.where`, `_count.select.*.where`, and nested relation payload `upsert.where` / to-one `update.where`. Matches v1.1.0 behavior exactly. |
+
+One example per level:
+
+```ts
+// Enforced at every level (basic / relations / includes):
+// @ts-expect-error — organizationId is required
+prisma.user.findMany({ where: {} })
+
+// Enforced at `relations` and above:
+// @ts-expect-error — Post.organizationId is required on the related filter
+prisma.user.findMany({
+  where: { organizationId: 1, posts: { some: {} } },
+})
+
+// Enforced at `includes` only:
+// @ts-expect-error — nested include.where must carry organizationId
+prisma.user.findMany({
+  where: { organizationId: 1 },
+  include: { posts: { where: {} } },
+})
+```
+
+Unknown values emit a warning and fall back to the default.
+
+### Migrating from v1.1 to v2.0
+
+**Breaking change in v2.0:** the default `strictness` dropped from the
+v1.1.0 `includes` baseline to `relations`. Consumers that rely on
+enforcement of any nested `where` surface that was strict in v1.1.0 —
+`include.*.where`, `select.*.where`, `_count.select.*.where`, nested
+relation payload `upsert.where`, and to-one `update.where` — silently lose
+it on upgrade. Opt back in explicitly:
+
+```
+generator whereRequired {
+  provider   = "prisma-where-required"
+  strictness = "includes"
+}
+```
+
+Existing v1.1.0 consumers that upgrade without setting `strictness` will see
+their nested-include compile errors disappear. The top-level action-args and
+relation-filter layers continue to fire unchanged.
+
 ## Overview
 prisma-where-required is a utility that enforces certain fields to be mandatory in the 'where' clause when using Prisma.
 This tool was primarily created with multi-tenant systems or to perform a soft delete in mind.
 
-This fork requires **Prisma 7** and the `prisma-client` generator provider.
+Requires **Prisma 7** and the `prisma-client` generator provider.
 
 ## Usage
 1. `npm i @gusevp/prisma-where-required -D`
@@ -159,6 +228,8 @@ it. Only the combinator branches relax.
 
 ## Relation filters enforce required fields
 
+*Applies at `strictness = "relations"` and above (the default).*
+
 `some`, `every`, `none`, `is`, `isNot`, and the XOR-direct relation
 shorthand (`{ author: {…} }` on a `…WhereInput`) all route through the
 `Strict` alias of the target model, so cross-tenant traversal is blocked:
@@ -179,7 +250,7 @@ prisma.user.findMany({
 ```
 
 The same applies to nested `include` args and `_count.select.*.where`
-**when you pass an object**:
+**when you pass an object** — but only at `strictness = "includes"`:
 
 ```ts
 // @ts-expect-error
@@ -200,6 +271,8 @@ The boolean shorthand (`include: { posts: true }`, `select: { posts: true }`,
 (`user.posts()`) are deliberately left permissive — see Non-goals below.
 
 ## Nested `delete` / `disconnect` enforce required fields
+
+*Applies at `strictness = "relations"` and above (the default).*
 
 On to-one nested update payloads (e.g. `UserUpdateOneWithoutMemosNestedInput`),
 Prisma accepts `delete` and `disconnect` as either `true` or a `WhereInput`.
@@ -235,7 +308,11 @@ Non-goals below.
 `{Model}WhereInputStrict` uses `field: T | undefined` rather than
 `field?: T` — the field is required at the type level and only its value
 can be `undefined`. If your downstream tsconfig enables
-`exactOptionalPropertyTypes: true`, you must pass the property explicitly:
+`exactOptionalPropertyTypes: true`, you must pass the property explicitly.
+Applies wherever the Strict alias is in effect: action-args `where` at every
+level; relation filters and nested `delete` / `disconnect` at `relations`
+and above; nested `include` / `select` / `_count` `where` plus nested
+relation payload `upsert.where` / to-one `update.where` at `includes`.
 
 ```ts
 // Won't compile under exactOptionalPropertyTypes with strict alias —
@@ -262,6 +339,7 @@ types are intentionally left permissive:
 | `cursor` (uses `WhereUniqueInput`) | Same as `WhereUniqueInput`. |
 | `data` (create/update payloads) | Not a filter surface. |
 | FK-scoped relation reads (`include: { posts: true }`, `select: { posts: true }`, `_count: { select: { posts: true } }`, fluent `user.posts()`) | These are scoped through the parent's tenant-filtered `where`. Assumes the data-integrity invariant that a related row's tenant column matches the parent's (e.g. `Post.organizationId` equals its `author.organizationId`). If your schema can have divergent tenant columns across related rows, pass an explicit filter: `include: { posts: { where: { organizationId: 1 } } }`. |
+| Nested `include.*.where`, `select.*.where`, `_count.select.*.where` (object form), plus nested relation payload `upsert.where` and to-one `update.where` — at `strictness = "basic"` or `"relations"` | Left permissive by default in v2.0. Opt in with `strictness = "includes"` to restore v1.1.0 enforcement. |
 
 If you hit a case where one of these surfaces enables a tenant leak for
 your system, please open an issue.

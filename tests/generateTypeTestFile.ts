@@ -1,14 +1,62 @@
 import fs from "fs";
 
 /**
- * Auto-generated type-only test harness. Running this script rewrites
- * `tests/type.test.ts`, which is then type-checked (not executed) by the
- * project's `npm test` pipeline: `prisma generate && tsc --noEmit ...`.
+ * Auto-generated type-only test harness. Running this script with
+ * `--level basic|relations|includes` rewrites `tests/type.<level>.test.ts`.
+ * Type-checked by the project's `npm test` pipeline:
+ * `prisma generate && tsc --noEmit ...`.
  *
  * The file is one big `tsc --noEmit` fixture: every `@ts-expect-error` must
  * be paired with a real type error, and every un-annotated statement must
  * compile cleanly.
+ *
+ * **Fixture generation is static, not client-introspecting.** Assertions are
+ * emitted as pure string templates keyed off the CLI `--level` arg. This
+ * script must NOT rely on TypeScript resolving its `import type { Prisma }`
+ * to decide what to emit — the currently-generated client is whichever level
+ * was last run, which is not necessarily the level being generated for.
+ *
+ * Level gating for negative (`@ts-expect-error`) cases:
+ *   - `basic`: action-args strictness only. Nested include/select, relation
+ *     filters, nested update/upsert `where`, and nested to-one
+ *     delete/disconnect cases are omitted.
+ *   - `relations`: `basic` + relation filters (some/every/none, is/isNot,
+ *     XOR-direct shorthand) + nested to-one delete/disconnect.
+ *   - `includes`: `relations` + nested include/select, `_count.select.*`,
+ *     and nested update/upsert `where`.
+ *
+ * Cases below their minimum level are **omitted entirely** (not emitted
+ * without their directive). Reason: a fixture tagged level X should compile
+ * cleanly against a client generated at X. Emitting an includes-only
+ * statement without its directive in the `basic` fixture would leave a
+ * statement that DOES error when the `basic` fixture is compiled against a
+ * `basic` client (the statement's error shape is level-dependent) — better
+ * to omit it and let the `includes` fixture carry the assertion.
+ *
+ * Positive (non-error) statements are emitted at all levels unconditionally.
  */
+
+type Level = "basic" | "relations" | "includes";
+const LEVELS: ReadonlyArray<Level> = ["basic", "relations", "includes"];
+const LEVEL_ORDER: Record<Level, number> = {
+    basic: 0,
+    relations: 1,
+    includes: 2,
+};
+
+function isAtLeast(level: Level, minLevel: Level): boolean {
+    return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel];
+}
+
+/**
+ * Emit `body` verbatim when `level` is at or above `minLevel`, otherwise
+ * return an empty string. Used inside template literals to gate paired
+ * `@ts-expect-error` + statement blocks without distorting the surrounding
+ * whitespace.
+ */
+function gate(level: Level, minLevel: Level, body: string): string {
+    return isAtLeast(level, minLevel) ? body : "";
+}
 
 type ModelCase = {
     /** Prisma delegate accessor: `prisma.<delegateKey>.<action>(...)`. */
@@ -191,8 +239,8 @@ prisma.${delegateKey}.${action}({ ${extraArgsPrefix}where: { ${requiredField}: {
     return block;
 }
 
-function generateTypeTestFile(outputPath: string) {
-    let content = `// !!!this file is auto generated.!!! \n\n`;
+function generateTypeTestFile(outputPath: string, level: Level) {
+    let content = `// !!!this file is auto generated.!!!\n\n`;
     // Type-only harness: the PrismaClient constructor in v7 requires an
     // adapter, which we don't need for compile-time type assertions. All
     // imports are hoisted here so the generated file opens with its full
@@ -200,9 +248,10 @@ function generateTypeTestFile(outputPath: string) {
     content += `import type { PrismaClient, Prisma } from '../generated/prisma/client'\n\n`;
     content += `declare const prisma: PrismaClient\n\n`;
 
-    // Per-model action matrix, looped so every model in MODEL_CASES gets
-    // covered by the same set of checks. This used to be hardcoded to
-    // `prisma.user` — v0.2 pushes it across all fixture models.
+    // Per-model action matrix (top-level action args — the `basic` layer).
+    // These errors fire at every level because Pass 1 strips `?` from every
+    // delegate method's args parameter at every level and the action-args
+    // `where` rewrite runs at `basic` and above.
     for (const modelCase of MODEL_CASES) {
         content += `// ========== ${modelCase.delegateKey} ==========\n`;
         for (const action of TARGET_ACTIONS) {
@@ -212,25 +261,26 @@ function generateTypeTestFile(outputPath: string) {
         content += buildWhereActionMatrix(modelCase, "groupBy", "by: ['id'], ");
     }
 
-    // Nested include args: the cross-file rewrite is the headline fix of
-    // v0.2 — `User$postsArgs.where` (lives in `User.ts`) must now reference
-    // `PostWhereInputStrict`, not the permissive `PostWhereInput`. Same for
-    // `User$memosArgs.where` → `MemoWhereInputStrict`.
+    // Nested include args: the cross-file rewrite is the `includes` layer —
+    // `User$postsArgs.where` (lives in `User.ts`) only references
+    // `PostWhereInputStrict` when strictness is `includes`. At `basic` /
+    // `relations` the nested `where` stays pristine, so `include: { posts:
+    // { where: {} } }` compiles and the negative cases are omitted here.
     //
     // NOTE: each call is kept on a single line so that `@ts-expect-error`
     // lands on exactly the expression that errors. Multi-line calls with
     // the error coming from a nested field would silently pass the directive.
     content += `
 // ========== nested include where (cross-file strict refs) ==========
-
+${gate(level, "includes", `
 // @ts-expect-error posts.where.organizationId is required
 prisma.user.findMany({ where: { organizationId: 1 }, include: { posts: { where: {} } } })
-
+`)}
 prisma.user.findMany({ where: { organizationId: 1 }, include: { posts: { where: { organizationId: 1 } } } })
-
+${gate(level, "includes", `
 // @ts-expect-error memos.where.organizationId is required (nullable still required at type level)
 prisma.user.findMany({ where: { organizationId: 1 }, include: { memos: { where: {} } } })
-
+`)}
 prisma.user.findMany({ where: { organizationId: 1 }, include: { memos: { where: { organizationId: 1 } } } })
 
 prisma.user.findMany({ where: { organizationId: 1 }, include: { memos: { where: { organizationId: null } } } })
@@ -240,26 +290,27 @@ prisma.user.findMany({ where: { organizationId: 1 }, include: { memos: { where: 
     // `_count: { select: { posts: { where: ... } } }` reaches
     // `UserCountOutputTypeCountPostsArgs.where` (in User.ts). The
     // `select: { _count: ... }` wrapper is required — `_count` is only
-    // addressable through a `select` clause.
+    // addressable through a `select` clause. Only strict at `includes`.
     content += `
 // ========== _count.select.posts.where (strict) ==========
-
+${gate(level, "includes", `
 // @ts-expect-error _count.select.posts.where.organizationId is required
 prisma.user.findMany({ where: { organizationId: 1 }, select: { _count: { select: { posts: { where: {} } } } } })
-
+`)}
 prisma.user.findMany({ where: { organizationId: 1 }, select: { _count: { select: { posts: { where: { organizationId: 1 } } } } } })
 `;
 
-    // Task 3: list-relation filter scoping. `posts: { some|every|none: {} }`
-    // must require the inner `organizationId` because PostWhereInput is
-    // rewritten to PostWhereInputStrict inside PostListRelationFilter.
+    // List-relation filter scoping (`relations` layer). `posts: { some|every
+    // |none: {} }` must require the inner `organizationId` because
+    // `PostWhereInput` is rewritten to `PostWhereInputStrict` inside
+    // `PostListRelationFilter` — at `relations` and above.
     //
     // Each expression is kept on a single line so @ts-expect-error pairs with
     // the exact failing call — multi-line nested object literals can shift
     // the error off the directive.
     content += `
 // ========== list relation filters (some/every/none, strict) ==========
-
+${gate(level, "relations", `
 // @ts-expect-error posts.some.organizationId is required
 prisma.user.findMany({ where: { organizationId: 1, posts: { some: {} } } })
 
@@ -268,34 +319,35 @@ prisma.user.findMany({ where: { organizationId: 1, posts: { every: {} } } })
 
 // @ts-expect-error posts.none.organizationId is required
 prisma.user.findMany({ where: { organizationId: 1, posts: { none: {} } } })
-
+`)}
 prisma.user.findMany({ where: { organizationId: 1, posts: { some: { organizationId: 1 } } } })
 prisma.user.findMany({ where: { organizationId: 1, posts: { every: { organizationId: 1 } } } })
 prisma.user.findMany({ where: { organizationId: 1, posts: { none: { organizationId: 1 } } } })
-
+${gate(level, "relations", `
 // Also covers Memo list relation on User (inverse of Memo.owner).
 // @ts-expect-error memos.some.organizationId is required
 prisma.user.findMany({ where: { organizationId: 1, memos: { some: {} } } })
-
+`)}
 prisma.user.findMany({ where: { organizationId: 1, memos: { some: { organizationId: 1 } } } })
 `;
 
-    // Task 3: scalar / nullable-scalar relation filters and XOR-direct
-    // shorthand. From Memo's side, `owner: { is: {} }` / `owner: {}` both
-    // reach UserWhereInput (via XOR<UserNullableScalarRelationFilter,
-    // UserWhereInput>) — both must require User.organizationId.
+    // Scalar / nullable-scalar relation filters and XOR-direct shorthand
+    // (`relations` layer). From Memo's side, `owner: { is: {} }` / `owner:
+    // {}` both reach `UserWhereInput` (via
+    // `XOR<UserNullableScalarRelationFilter, UserWhereInput>`) — both must
+    // require `User.organizationId` at `relations` and above.
     content += `
 // ========== scalar relation filters (is/isNot + XOR shorthand, strict) ==========
-
+${gate(level, "relations", `
 // @ts-expect-error owner.is.organizationId is required
 prisma.memo.findMany({ where: { organizationId: 1, owner: { is: {} } } })
 
 // @ts-expect-error owner.isNot.organizationId is required
 prisma.memo.findMany({ where: { organizationId: 1, owner: { isNot: {} } } })
-
+`)}
 prisma.memo.findMany({ where: { organizationId: 1, owner: { is: { organizationId: 1 } } } })
 prisma.memo.findMany({ where: { organizationId: 1, owner: { isNot: { organizationId: 1 } } } })
-
+${gate(level, "relations", `
 // XOR-direct shorthand: \`owner: {...}\` (no is/isNot wrapper). The XOR-second
 // rewrite targets this path. Passing a property unique to UserWhereInputStrict
 // (not on UserScalarRelationFilter) without organizationId must fail — this
@@ -308,28 +360,32 @@ prisma.memo.findMany({ where: { organizationId: 1, owner: { isNot: { organizatio
 // \`is\`/\`isNot\` for exhaustive relation-filter coverage.
 // @ts-expect-error owner.{direct}.organizationId is required when naming a User scalar
 prisma.memo.findMany({ where: { organizationId: 1, owner: { name: "x" } } })
-
+`)}
 prisma.memo.findMany({ where: { organizationId: 1, owner: { organizationId: 1 } } })
 prisma.memo.findMany({ where: { organizationId: 1, owner: { organizationId: 1, name: "x" } } })
 
 // Nullable relation: passing \`null\` is still valid (owner is optional).
 prisma.memo.findMany({ where: { organizationId: 1, owner: null } })
-
+${gate(level, "relations", `
 // Post → User (non-nullable scalar relation): same matrix.
 // @ts-expect-error author.is.organizationId is required
 prisma.post.findMany({ where: { organizationId: 1, author: { is: {} } } })
-
+`)}
 prisma.post.findMany({ where: { organizationId: 1, author: { is: { organizationId: 1 } } } })
-
+${gate(level, "relations", `
 // @ts-expect-error author.{direct}.organizationId is required when naming a User scalar
 prisma.post.findMany({ where: { organizationId: 1, author: { name: "x" } } })
-
+`)}
 prisma.post.findMany({ where: { organizationId: 1, author: { organizationId: 1 } } })
 `;
 
-    // Task 3: combinator permissiveness regression. The whole point of the
+    // Combinator permissiveness regression. The whole point of the
     // strict-alias refactor is that AND/OR/NOT keep pointing at the permissive
-    // WhereInput — branches must NOT require organizationId.
+    // WhereInput — branches must NOT require organizationId. The Strict alias
+    // is emitted at every level, so these positive cases compile everywhere.
+    //
+    // The `posts.some.organizationId is still required even inside OR` case
+    // is `relations`-layer (`some` is only strict at `relations`+).
     content += `
 // ========== AND/OR/NOT combinator permissiveness (regression) ==========
 
@@ -340,7 +396,7 @@ prisma.user.findMany({ where: { organizationId: 1, NOT: { name: "a" } } })
 // Same for Post/Memo — any-model combinators stay permissive.
 prisma.post.findMany({ where: { organizationId: 1, OR: [{ title: "a" }] } })
 prisma.memo.findMany({ where: { organizationId: 1, AND: [{ content: "a" }] } })
-
+${gate(level, "relations", `
 // Combinator + relation intersection: OR branches are permissive in the
 // outer shape (no organizationId required on the branch itself), but
 // relation filters nested inside a branch are still strict because the
@@ -349,7 +405,7 @@ prisma.memo.findMany({ where: { organizationId: 1, AND: [{ content: "a" }] } })
 // requires Post.organizationId.
 // @ts-expect-error posts.some.organizationId is still required even inside OR
 prisma.user.findMany({ where: { organizationId: 1, OR: [{ posts: { some: {} } }] } })
-
+`)}
 // Valid: nested relation filter gets its required field.
 prisma.user.findMany({ where: { organizationId: 1, OR: [{ posts: { some: { organizationId: 1 } } }] } })
 
@@ -363,6 +419,9 @@ prisma.user.findMany({ where: { organizationId: 1, OR: [{ posts: { some: { organ
     // compile-time \`true\`/\`never\` checks, so they cost nothing at runtime
     // but catch regressions where the type shape drifts (e.g. a future change
     // accidentally rewrites OR to Strict, or drops a field from the Omit).
+    //
+    // All assertions reference the Strict alias, which is emitted at every
+    // level (Pass 1 runs unconditionally). Correct at `basic`+.
     content += `
 // ========== type-level structural invariants ==========
 
@@ -427,7 +486,7 @@ type _NoTagStrict = Prisma.TagWhereInputStrict
     // groupBy.having (ScalarWhereWithAggregates), create/update data payloads.
     // These must STAY permissive — re-requiring tenant fields here would
     // either be redundant (primary-key lookups) or wrong (data payloads are
-    // not filters).
+    // not filters). All positive cases; compile at every level.
     content += `
 // ========== non-goal surfaces (must stay permissive) ==========
 
@@ -459,26 +518,25 @@ prisma.user.createMany({ data: [{ email: "a", organizationId: 1 }] })
 prisma.post.createMany({ data: [{ title: "a", organizationId: 1, authorId: 1 }] })
 `;
 
-    // Nested update/upsert \`where\` INSIDE relation payloads — per plan's
-    // Solution Overview ¶3, every \`where\` gets rewritten "including nested
-    // update/upsert \`where\`". The reachable surface here is
+    // Nested update/upsert \`where\` INSIDE relation payloads — only rewritten
+    // at `includes` (full alias sweep). The reachable surface is
     // \`UserUpsertWithoutPostsInput.where: UserWhereInputStrict\` (and the
     // matching \`UserUpdateToOneWithWhereWithoutPostsInput.where\`), reached
     // via \`post.update({ data: { author: { upsert: { where, update, create } } } })\`.
     content += `
 // ========== nested update/upsert where (strict, through relation payloads) ==========
-
+${gate(level, "includes", `
 // Nested upsert requires \`where\`; must reject empty.
 // @ts-expect-error nested upsert.where.organizationId is required
 prisma.post.update({ where: { id: 1 }, data: { author: { upsert: { where: {}, update: {}, create: { email: "a", organizationId: 1 } } } } })
-
+`)}
 // Valid: Strict alias satisfied by organizationId.
 prisma.post.update({ where: { id: 1 }, data: { author: { upsert: { where: { organizationId: 1 }, update: {}, create: { email: "a", organizationId: 1 } } } } })
-
+${gate(level, "includes", `
 // Nested update-to-one-with-where path also strict.
 // @ts-expect-error nested update.where.organizationId is required
 prisma.post.update({ where: { id: 1 }, data: { author: { update: { where: {}, data: {} } } } })
-
+`)}
 prisma.post.update({ where: { id: 1 }, data: { author: { update: { where: { organizationId: 1 }, data: {} } } } })
 `;
 
@@ -487,10 +545,11 @@ prisma.post.update({ where: { id: 1 }, data: { author: { update: { where: { orga
     // inside \`UserUpdateOneWithoutMemosNestedInput\`. Reached via
     // \`memo.update({ data: { owner: { delete: {...} } } })\`. An under-filtered
     // WhereInput here is a cross-tenant delete — same leak surface as
-    // top-level \`where\`, so the rewriter swaps WhereInput → WhereInputStrict.
+    // top-level \`where\`, so the rewriter swaps WhereInput → WhereInputStrict
+    // at `relations`+.
     content += `
 // ========== nested to-one delete/disconnect (strict) ==========
-
+${gate(level, "relations", `
 // delete with empty filter: must require organizationId.
 // @ts-expect-error owner.delete.organizationId is required
 prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { delete: { name: "x" } } } })
@@ -498,7 +557,7 @@ prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { delet
 // disconnect with empty filter: same.
 // @ts-expect-error owner.disconnect.organizationId is required
 prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { disconnect: { name: "x" } } } })
-
+`)}
 // Valid: filter includes organizationId.
 prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { delete: { organizationId: 1 } } } })
 prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { disconnect: { organizationId: 1 } } } })
@@ -511,7 +570,31 @@ prisma.memo.update({ where: { id: 1, organizationId: 1 }, data: { owner: { disco
     fs.writeFileSync(outputPath, content, { encoding: "utf-8", flag: "w" });
 }
 
+function parseLevelArg(argv: ReadonlyArray<string>): Level {
+    const idx = argv.indexOf("--level");
+    if (idx === -1) {
+        console.error(
+            `--level flag is required (basic|relations|includes).`,
+        );
+        process.exit(1);
+    }
+    const raw = argv[idx + 1];
+    if (!raw) {
+        console.error(
+            `--level flag requires a value (basic|relations|includes).`,
+        );
+        process.exit(1);
+    }
+    if (!(LEVELS as ReadonlyArray<string>).includes(raw)) {
+        console.error(
+            `Unknown --level: "${raw}". Expected basic|relations|includes.`,
+        );
+        process.exit(1);
+    }
+    return raw as Level;
+}
+
 if (require.main === module) {
-    const outputPath = "./tests/type.test.ts";
-    generateTypeTestFile(outputPath);
+    const level = parseLevelArg(process.argv.slice(2));
+    generateTypeTestFile(`./tests/type.${level}.test.ts`, level);
 }

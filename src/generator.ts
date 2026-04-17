@@ -12,6 +12,50 @@ const WHERE_REQUIRED_ANNOTATION = "@where-required";
 const CLIENT_GENERATOR_PROVIDER = "prisma-client";
 
 /**
+ * Strictness level controls how aggressively the generator rewrites Prisma
+ * types:
+ *   - `basic`     — top-level action args `where` only.
+ *   - `relations` — `basic` + relation filters + to-one delete/disconnect.
+ *   - `includes`  — `relations` + nested include/select `where` (v1.1.0).
+ *
+ * Default is `relations`. Gating happens in `rewriteWhereReferencesPass`.
+ */
+export type Strictness = "basic" | "relations" | "includes";
+const STRICTNESS_LEVELS: ReadonlyArray<Strictness> = [
+  "basic",
+  "relations",
+  "includes",
+];
+const DEFAULT_STRICTNESS: Strictness = "relations";
+
+/**
+ * Parses the `strictness` generator config value.
+ *
+ * Mirrors `parseRequiredFieldsConfig`'s input-shape handling (string |
+ * string[] | undefined) since Prisma's generator config values can arrive as
+ * either. Unknown values emit a single `logger.warn` and fall back to the
+ * default level.
+ */
+function parseStrictnessConfig(
+  raw: string | string[] | undefined,
+): Strictness {
+  if (raw === undefined) return DEFAULT_STRICTNESS;
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof candidate !== "string") return DEFAULT_STRICTNESS;
+  const trimmed = candidate.trim();
+  if (trimmed.length === 0) return DEFAULT_STRICTNESS;
+  if ((STRICTNESS_LEVELS as ReadonlyArray<string>).includes(trimmed)) {
+    return trimmed as Strictness;
+  }
+  logger.warn(
+    `prisma-where-required: unknown \`strictness\` value "${trimmed}". ` +
+      `Expected one of ${STRICTNESS_LEVELS.map((l) => `"${l}"`).join(", ")}. ` +
+      `Falling back to "${DEFAULT_STRICTNESS}".`,
+  );
+  return DEFAULT_STRICTNESS;
+}
+
+/**
  * Parses the `requiredFields` generator config value.
  *
  * Accepts either a string (single field) or string[] (multiple fields) since
@@ -135,6 +179,15 @@ generatorHandler({
 
     const debug = options.generator.config.debug === "true";
 
+    const strictness = parseStrictnessConfig(
+      options.generator.config.strictness,
+    );
+    if (debug) {
+      console.debug(
+        `prisma-where-required: resolved strictness = "${strictness}"`,
+      );
+    }
+
     const configFields = parseRequiredFieldsConfig(
       options.generator.config.requiredFields,
     );
@@ -185,6 +238,7 @@ generatorHandler({
           path: join(modelsDir, file),
           requiredSet,
           modelSet,
+          strictness,
           debug,
         });
       }

@@ -178,21 +178,21 @@ Both share the same inner per-property logic; factor it into a helper.
 - Modify: `src/generator.ts`
 - Modify: `src/convertor.ts`
 
-- [ ] Add `Strictness` type and `DEFAULT_STRICTNESS = "relations"` constant
+- [x] Add `Strictness` type and `DEFAULT_STRICTNESS = "relations"` constant
       in `src/generator.ts`.
-- [ ] Add `parseStrictnessConfig(raw)` with the same input-shape handling
+- [x] Add `parseStrictnessConfig(raw)` with the same input-shape handling
       as `parseRequiredFieldsConfig` (string | string[] | undefined);
       unknown values emit `logger.warn` and fall back to default.
-- [ ] In `onGenerate`, parse `options.generator.config.strictness`, log
+- [x] In `onGenerate`, parse `options.generator.config.strictness`, log
       the resolved level when `debug` is on, and pass it into the pass-2
       loop call site.
-- [ ] Extend `rewriteWhereReferencesPass` in `src/convertor.ts` to accept
+- [x] Extend `rewriteWhereReferencesPass` in `src/convertor.ts` to accept
       `strictness`. Keep the body unchanged for now (wire-through only).
-- [ ] Re-run `npm test` — behavior must be identical. Task 1 is
+- [x] Re-run `npm test` — behavior must be identical. Task 1 is
       **wire-through only**: no splitting of `rewriteWhereReferences`
       yet, so regardless of resolved level the full sweep still runs
       unchanged. The behavior split lands in Task 3.
-- [ ] Add a minimal regression: run `npm run generate:prisma` with
+- [x] Add a minimal regression: run `npm run generate:prisma` with
       `strictness = "relations"` and verify no diff in
       `generated/prisma/models/*.ts` vs current output. This check is
       valid only at Task 1 (wire-through); after Task 3 the diff is
@@ -203,11 +203,11 @@ Both share the same inner per-property logic; factor it into a helper.
 **Files:**
 - Modify: `src/convertor.ts` (add regex + comment block)
 
-- [ ] Run `grep -oE '^(export )?type [A-Z][A-Za-z0-9_]+Args\b' generated/prisma/models/*.ts | sort -u`
+- [x] Run `grep -oE '^(export )?type [A-Z][A-Za-z0-9_]+Args\b' generated/prisma/models/*.ts | sort -u`
       and list every args-alias shape the schema fixture produces.
-- [ ] Cross-reference with Prisma 7 generator docs / source to identify
+- [x] Cross-reference with Prisma 7 generator docs / source to identify
       which args aliases correspond to top-level delegate calls.
-- [ ] Record the allowlist + rejected shapes as a classification comment
+- [x] Record the allowlist + rejected shapes as a classification comment
       block next to the regex — same style as the existing XOR
       classification comment in `convertor.ts`. Enumerate explicitly
       (no "etc."):
@@ -224,11 +224,14 @@ Both share the same inner per-property logic; factor it into a helper.
         `{M}CountOutputTypeCount*Args`, `{M}GroupByOutputType…`.
       Task 2's `grep` step must confirm no Prisma 7 alias lands outside
       these three buckets — any new shape needs classification before
-      this task is marked done.
-- [ ] Add `ACTION_ARGS_NAME_RE` regex in `src/convertor.ts`:
+      this task is marked done. Survey finding: two additional shapes
+      (`{M}DefaultArgs`, `{M}CountOutputTypeDefaultArgs`) fall into the
+      "no `where`" / nested-helper bucket (generic select/include helpers
+      with no rewrite surface) — classified in the convertor comment.
+- [x] Add `ACTION_ARGS_NAME_RE` regex in `src/convertor.ts`:
       `/^([A-Za-z0-9_]+)(FindMany|FindFirst|FindFirstOrThrow|Count|Aggregate|GroupBy|UpdateMany|UpdateManyAndReturn|DeleteMany)Args$/`
       — gate with `modelSet.has(match[1])` to exclude arbitrary user types.
-- [ ] No tests in this task — it's a discovery + constant. Verified in
+- [x] No tests in this task — it's a discovery + constant. Verified in
       Task 3.
 
 ### Task 3: Split `rewriteWhereReferences` into action-args-only and full variants
@@ -236,15 +239,15 @@ Both share the same inner per-property logic; factor it into a helper.
 **Files:**
 - Modify: `src/convertor.ts`
 
-- [ ] Extract the per-property rewrite body from `rewriteWhereReferences`
+- [x] Extract the per-property rewrite body from `rewriteWhereReferences`
       into a helper `rewriteWhereOnAlias(alias, requiredSet, debug)`.
-- [ ] Keep `rewriteWhereReferences(sourceFile, requiredSet, debug)` as a
+- [x] Keep `rewriteWhereReferences(sourceFile, requiredSet, debug)` as a
       thin loop over every alias that calls `rewriteWhereOnAlias`.
-- [ ] Add `rewriteActionArgsWhereReferences(sourceFile, requiredSet,
+- [x] Add `rewriteActionArgsWhereReferences(sourceFile, requiredSet,
       modelSet, debug)` that iterates aliases, gates by
       `ACTION_ARGS_NAME_RE` + `modelSet`, and delegates to
       `rewriteWhereOnAlias`.
-- [ ] Update `rewriteWhereReferencesPass` to switch on `strictness`:
+- [x] Update `rewriteWhereReferencesPass` to switch on `strictness`:
       - `basic`: call `rewriteActionArgsWhereReferences` only.
       - `relations`: + `rewriteRelationFilterReferences`.
       - `includes`: + `rewriteWhereReferences` (the full alias sweep);
@@ -253,13 +256,29 @@ Both share the same inner per-property logic; factor it into a helper.
         an already-`…Strict`-typed property is a no-op because
         `WHERE_INPUT_RE` matches only `…WhereInput$`, but doing the work
         twice still wastes ts-morph traversal time).
-- [ ] Write a minimal shell-level assertion: run
+- [x] Write a minimal shell-level assertion: run
       `npm run generate:prisma` three times with `strictness` set to
       `basic`, `relations`, `includes` respectively; for each, spot-check
       one representative file (`User.ts`, `Post.ts`) with `diff` against
       a recorded golden to confirm the expected subset of rewrites.
-- [ ] Run `npm test` with default (`relations`) — must pass; with
-      `strictness = "includes"` — must pass (behavior matches pre-split).
+      Verified: basic→relations diff on User.ts shows only `is`/`isNot`
+      on `UserScalarRelationFilter` + `UserNullableScalarRelationFilter`
+      and `delete`/`disconnect` on `UserUpdateOneWithoutMemosNestedInput`
+      flip to Strict; on Post.ts shows `author` XOR second-arg +
+      `every`/`some`/`none` on `PostListRelationFilter` flip to Strict.
+      relations→includes diff on User.ts shows nested include/count/
+      upsert `where` positions (`User$postsArgs`, `User$memosArgs`,
+      `UserCountOutputTypeCount{Posts,Memos}Args`,
+      `UserUpsertWithoutPostsInput`,
+      `UserUpdateToOneWithWhereWithoutPostsInput`, plus Memos variants)
+      flip to Strict. Matches plan's expected subset exactly.
+- [x] Run `npm test` with `strictness = "includes"` — passes (behavior
+      matches pre-split v1.1.0). Default `relations` produces the
+      expected `TS2578` unused-`@ts-expect-error` failures on the
+      `includes`-only fixture cases (nested include/select/`_count`) —
+      Task 5/6 split the fixture per level to make all three pass. The
+      schema fixture is left at `strictness = "includes"` through
+      Task 4 so existing tests keep passing during the transition.
 
 ### Task 4: Audit the schema fixture for coverage across all three layers
 
@@ -268,17 +287,28 @@ Both share the same inner per-property logic; factor it into a helper.
 - Modify: `tests/generateTypeTestFile.ts` (only if new fixture models
   need test coverage)
 
-- [ ] Audit the current schema — confirm it has at least one to-one
+- [x] Audit the current schema — confirm it has at least one to-one
       relation with `delete`/`disconnect` surface, at least one list
       relation with `some`/`every`/`none`, and at least one to-one
       `include`/`select` path for the `includes`-only cases. The current
       User/Post/Memo set appears sufficient (see
       `generateTypeTestFile.ts` nested include/select + nested
       delete/disconnect sections) — expect this to be a no-op.
-- [ ] If any of the three surfaces isn't covered, add a minimal model
+      Audit findings (no-op confirmed):
+      - To-one `delete`/`disconnect`: `UserUpdateOneWithoutMemosNestedInput`
+        (User.ts:393-401) carries `delete`/`disconnect: UserWhereInputStrict |
+        boolean`, reached via `Memo.owner` (nullable to-one).
+      - List relation filters: `User.posts` and `User.memos` both produce
+        `{Post,Memo}ListRelationFilter` with `some`/`every`/`none`.
+      - To-one nested `include`/`select`: `Memo$ownerArgs.where`
+        (Memo.ts:1369) is typed `UserWhereInputStrict`; Post.author reaches
+        `UserUpsertWithoutPostsInput.where` and
+        `UserUpdateToOneWithWhereWithoutPostsInput.where` through nested
+        update/upsert payloads.
+- [x] If any of the three surfaces isn't covered, add a minimal model
       pair (e.g. `Memo` + `User.owner` if not already present) with a
-      required field annotation.
-- [ ] Placing this before Task 5 so the fixture generator's per-case
+      required field annotation. (Not needed — all three covered.)
+- [x] Placing this before Task 5 so the fixture generator's per-case
       tagging lands with a stable schema.
 
 ### Task 5: Add strictness support to the test-fixture generator
@@ -286,50 +316,62 @@ Both share the same inner per-property logic; factor it into a helper.
 **Files:**
 - Modify: `tests/generateTypeTestFile.ts`
 
-- [ ] Read `tests/generateTypeTestFile.ts` and identify the cases that
+- [x] Read `tests/generateTypeTestFile.ts` and identify the cases that
       exercise nested include/select (`includes`-only), relation filters
       (`relations` and above), and top-level action args (`basic` and
       above).
-- [ ] Add per-case tags indicating the minimum strictness level at which
+- [x] Add per-case tags indicating the minimum strictness level at which
       each `@ts-expect-error` case becomes an error (e.g. a nested
       `include.posts.where: {}` expect-error case is only valid at
       `includes`; at `basic`/`relations` the same call should compile).
-- [ ] **Directive management (critical)**: tagging must control BOTH
+- [x] **Directive management (critical)**: tagging must control BOTH
       whether the statement appears AND whether a preceding
       `@ts-expect-error` directive is emitted. `tsc --noEmit` treats an
       *unused* `@ts-expect-error` as a compile error, so a level-
       `includes` case left in a level-`basic` fixture with its directive
-      intact will fail the suite. Rules:
-      - Level below the case's tag: either **omit the statement entirely**
-        (cleanest) or emit the statement **without** the
-        `@ts-expect-error` directive (if the non-erroring form is itself
-        worth asserting compiles).
-      - Level at or above the tag: emit both statement + directive.
-- [ ] **Fixture generation is static, not client-introspecting**:
+      intact will fail the suite. Decision: use the **omit-entirely**
+      variant for cases below their minimum level. Reason: a statement
+      like `findMany({ where: { organizationId: 1, posts: { some: {} } } })`
+      compiles at `basic` (permissive `some`) but errors at `relations`+
+      (strict `some`); emitting it without a directive in the `basic`
+      fixture would then error when the `basic` fixture is compiled
+      against a `basic` client (the statement itself is level-dependent).
+      Omitting keeps each fixture compilable against its matching client.
+- [x] **Fixture generation is static, not client-introspecting**:
       `generateTypeTestFile.ts` must emit assertions as pure string
       templates keyed off the CLI `--level` arg. It must NOT rely on
       TypeScript resolving its own `import type { Prisma } from
       '../generated/prisma/client'` to decide what to emit — the
       currently-generated client is whichever level was last run, which
-      is not necessarily the level being generated for.
-- [ ] Drive the generator from a CLI arg (`--level basic|relations|includes`)
+      is not necessarily the level being generated for. Verified: the
+      generator never imports from `../generated`; all output is string
+      templates keyed off the `level` arg and the static `MODEL_CASES`
+      table. Docstring at the top of the file documents this invariant.
+- [x] Drive the generator from a CLI arg (`--level basic|relations|includes`)
       and emit to `tests/type.<level>.test.ts`. Keep the old output path
-      as a default for backward compat with existing scripts.
-- [ ] Regenerate all three fixtures in one shot (no `prisma generate`
+      as a default for backward compat with existing scripts (no flag →
+      emit to `tests/type.test.ts` at `DEFAULT_LEVEL = "includes"`;
+      byte-identical to pre-refactor output).
+- [x] Regenerate all three fixtures in one shot (no `prisma generate`
       between generations — fixtures are static strings):
       ```
       ts-node tests/generateTypeTestFile.ts --level basic
       ts-node tests/generateTypeTestFile.ts --level relations
       ts-node tests/generateTypeTestFile.ts --level includes
       ```
-      Commit all three.
+      Committed all three. Verified: `tests/type.includes.test.ts` is
+      byte-identical to the current `tests/type.test.ts`; `npm test`
+      continues to pass at `strictness = "includes"` with all four
+      fixtures present (basic/relations fixtures' directives all pair
+      with errors that also fire at `includes`, so no unused-directive
+      failures).
 
 ### Task 6: Extend `npm test` to compile all three strictness fixtures
 
 **Files:**
 - Modify: `package.json`
 
-- [ ] Current `test` script generates the client once then compiles
+- [x] Current `test` script generates the client once then compiles
       `tests/*.test.ts`. Split into three sub-scripts, one per level,
       each of shape: `prisma generate (with strictness=X) && tsc
       --noEmit tests/type.X.test.ts …`. The client MUST be regenerated
@@ -337,30 +379,33 @@ Both share the same inner per-property logic; factor it into a helper.
       types they import (`import type { PrismaClient, Prisma } from
       '../generated/prisma/client'`) differ per level and must match the
       fixture being compiled.
-- [ ] Passing `strictness` to `prisma generate` requires setting it in
+- [x] Passing `strictness` to `prisma generate` requires setting it in
       `prisma/schema.prisma` for each run. Options: (a) keep a single
       schema and mutate the `strictness` line in-place via a tiny
       script; (b) keep three sibling schemas (`schema.basic.prisma`
       etc.) and point `prisma generate --schema=…` at the right one.
-      Option (b) is simpler and avoids in-place edits; choose (b)
-      unless an explicit reason not to surfaces at implementation time.
-- [ ] Three sub-scripts: `test:basic`, `test:relations`, `test:includes`.
+      Chose option (b). To minimize duplication: `schema.prisma` itself
+      serves as the `relations` schema (matching the new default; also
+      what `npm run generate:prisma` and `prisma.config.ts` use for dev),
+      with sibling files `schema.basic.prisma` and
+      `schema.includes.prisma` differing only in the `strictness` value.
+- [x] Three sub-scripts: `test:basic`, `test:relations`, `test:includes`.
       `test` runs all three sequentially.
-- [ ] Run `npm test` from a clean checkout — all three levels must pass.
-- [ ] No new test file here; the task itself is the test harness.
+- [x] Run `npm test` from a clean checkout — all three levels must pass.
+- [x] No new test file here; the task itself is the test harness.
 
 ### Task 7: Update README with the new option and migration note
 
 **Files:**
 - Modify: `README.md`
 
-- [ ] Add a "Strictness levels" section near the existing "What's new in
+- [x] Add a "Strictness levels" section near the existing "What's new in
       v1.1.0" block documenting each level with a one-liner + one code
       example per level.
-- [ ] State the default (`relations`) and what that means for v1.1.0
+- [x] State the default (`relations`) and what that means for v1.1.0
       users (the nested-include layer now requires explicit opt-in via
       `strictness = "includes"`).
-- [ ] Add a "Migrating from v1.1" subsection with a copy-paste config
+- [x] Add a "Migrating from v1.1" subsection with a copy-paste config
       block for users who want to preserve current behavior:
       ```
       generator whereRequired {
@@ -368,47 +413,69 @@ Both share the same inner per-property logic; factor it into a helper.
         strictness = "includes"
       }
       ```
-- [ ] Update the "Relation filters enforce required fields" and "Nested
+- [x] Update the "Relation filters enforce required fields" and "Nested
       include/select" paragraphs to note which level they belong to.
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] Verify every requirement from Overview is implemented:
-  - `strictness` option parsed, validated, defaults to `relations`.
-  - Each level rewrites exactly its documented subset of surfaces.
-  - Unknown values warn and fall back.
-- [ ] Run `npm test` (all three levels) — must pass.
-- [ ] Run `npm run lint` — must pass.
-- [ ] `tsc --noEmit` on each generated `tests/type.<level>.test.ts`
-      against a client generated at that level — must pass.
-- [ ] Spot-check `generated/prisma/models/User.ts` at each level and
-      confirm by eye: `basic` has strict `where` only in action args,
-      `relations` adds XOR/relation-filter strictness, `includes`
-      matches v1.1.0 output.
+- [x] Verify every requirement from Overview is implemented:
+  - `strictness` option parsed, validated, defaults to `relations`
+    (`parseStrictnessConfig` at `src/generator.ts:40` — STRICTNESS_LEVELS
+    membership gate, `DEFAULT_STRICTNESS = "relations"`).
+  - Each level rewrites exactly its documented subset of surfaces
+    (spot-check below).
+  - Unknown values warn (`logger.warn` at `src/generator.ts:52-55`) and
+    fall back to default.
+- [x] Run `npm test` (all three levels) — passes (`test:basic` →
+      `test:relations` → `test:includes`, exit 0).
+- [x] Run `npm run lint` — passes (no output).
+- [x] `tsc --noEmit` on each generated `tests/type.<level>.test.ts`
+      against a client generated at that level — handled by the per-level
+      sub-scripts in `package.json` which regenerate the client with the
+      matching schema before compiling its fixture.
+- [x] Spot-check `generated/prisma/models/User.ts` at each level — confirmed:
+      - `basic`: 9 `WhereInputStrict` references, all on action-args
+        aliases (Aggregate/GroupBy/FindFirst/FindFirstOrThrow/FindMany/
+        UpdateMany/UpdateManyAndReturn/DeleteMany) + the alias definition.
+      - `relations`: 15 — adds `is`/`isNot` on
+        `UserScalarRelationFilter` + `UserNullableScalarRelationFilter`
+        and `delete`/`disconnect` on
+        `UserUpdateOneWithoutMemosNestedInput`.
+      - `includes`: 23 — adds nested `User$postsArgs.where`,
+        `User$memosArgs.where`,
+        `UserCountOutputTypeCount{Posts,Memos}Args.where`,
+        `UserUpsertWithout{Posts,Memos}Input.where`, and
+        `UserUpdateToOneWithWhereWithout{Posts,Memos}Input.where`.
 
 ### Task 9: [Final] Update documentation and housekeeping
 
-- [ ] Update README (done in Task 7 — re-verify after Task 8).
-- [ ] Update `CLAUDE.md` if the two-pass convention changes enough to
-      warrant documenting (likely not — the pass structure is the same,
-      just gated).
-- [ ] Bump `package.json` version. Recommend `2.0.0` — dropping the
-      nested-include layer from the default is a visible behavior change
-      for existing v1.1.0 users who relied on it. If the user prefers
-      to treat the default change as non-breaking because it's strictly
-      *more permissive* (fewer compile errors), `1.2.0` is defensible.
-      Decision + reasoning captured in Post-Completion.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] Update README (done in Task 7 — re-verified after Task 8: the
+      `Strictness levels` section at README.md:35 and the
+      `Migrating from v1.1` subsection at README.md:76 both match the
+      final implementation; relation-filter and nested-include paragraphs
+      are tagged with their minimum level).
+- [x] Update `CLAUDE.md` if the two-pass convention changes enough to
+      warrant documenting — skipped: no `CLAUDE.md` exists in the repo,
+      and the pass structure is the same, just gated per level, so
+      introducing one for this alone would be premature.
+- [x] Bump `package.json` version to `2.0.0`. Rationale: existing v1.1.0
+      consumers that relied on nested-include enforcement silently lose
+      it on upgrade when the default drops to `relations`; a major bump
+      signals that an explicit `strictness = "includes"` opt-in is
+      required to preserve prior behavior (recorded in the
+      `Migrating from v1.1` README section and Post-Completion below).
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 
 *Items requiring manual intervention or external systems.*
 
 **Version & release:**
-- Decide between `1.2.0` (minor, treat `relations` as a permissive
-  default expansion) and `2.0.0` (major, treat the nested-include
-  behavior change as breaking). Recommend `2.0.0` — existing v1.1.0 users
-  relying on nested-include enforcement silently lose it on upgrade.
+- Decision: bumped to `2.0.0` in Task 9. Rationale: existing v1.1.0
+  consumers relying on nested-include enforcement silently lose it on
+  upgrade when the default drops to `relations`. A major bump signals
+  the opt-in requirement (`strictness = "includes"`) and matches the
+  README `Migrating from v1.1` section.
 - Write release notes including the migration snippet.
 - Tag and publish to npm (`npm publish` is out of scope for the agent —
   user's call).

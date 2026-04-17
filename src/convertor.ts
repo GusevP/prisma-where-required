@@ -1,5 +1,7 @@
 import { Project, Node, PropertySignature, SourceFile } from "ts-morph";
 
+import type { Strictness } from "./generator";
+
 // In Prisma 7's `prisma-client` provider, types are top-level exports of
 // per-model files (`{output}/models/{ModelName}.ts`) — there is no
 // `module "Prisma"` wrapper like the legacy `prisma-client-js` produced.
@@ -73,14 +75,65 @@ function emitStrictAlias(
 }
 
 /**
+ * Rewrite every `where` PropertySignature on a single type alias whose type
+ * resolves to `(Prisma.)?{Model}WhereInput` where `Model ∈ requiredSet`.
+ * Drops `?` and swaps the type to the `...Strict` sibling.
+ *
+ * Shared per-alias helper — called both by the full-file sweep
+ * (`rewriteWhereReferences`, `includes` level) and the action-args-only sweep
+ * (`rewriteActionArgsWhereReferences`, `basic`+ level). Gating by alias name
+ * happens at the call site.
+ */
+function rewriteWhereOnAlias(
+  alias: ReturnType<SourceFile["getTypeAliases"]>[number],
+  requiredSet: Set<string>,
+  debug: boolean,
+) {
+  const typeNode = alias.getTypeNodeOrThrow();
+  if (!Node.isTypeLiteral(typeNode)) return;
+
+  for (const property of typeNode.getMembers()) {
+    if (!Node.isPropertySignature(property)) continue;
+    if (property.getName() !== "where") continue;
+
+    const propertyTypeNode = property.getTypeNode();
+    if (!propertyTypeNode) continue;
+    const typeText = propertyTypeNode.getText();
+
+    // Match `{Model}WhereInput` or `Prisma.{Model}WhereInput` exactly —
+    // no tolerance for surrounding unions/generics or a trailing `| null`
+    // (nested args' `where` is never nullable). Capture the optional
+    // `Prisma.` prefix so we can mirror it on the rewrite.
+    const match = WHERE_INPUT_RE.exec(typeText);
+    if (!match) continue;
+    const prefix = match[1] ?? "";
+    const targetModel = match[2];
+    if (!requiredSet.has(targetModel)) continue;
+
+    const newText = `${prefix}${targetModel}WhereInputStrict`;
+
+    if (debug) {
+      console.debug(
+        `rewrite ${alias.getName()}.where: ${typeText} -> ${newText}` +
+          (property.hasQuestionToken() ? " (drop ?)" : ""),
+      );
+    }
+
+    propertyTypeNode.replaceWithText(newText);
+    if (property.hasQuestionToken()) {
+      property.setHasQuestionToken(false);
+    }
+  }
+}
+
+/**
  * Walk every type alias in the file and rewrite any `where` PropertySignature
  * whose type resolves to `(Prisma.)?{Model}WhereInput` where `Model` is in
- * `requiredSet`. The property gets its `?` dropped and its type switched to
- * the `...Strict` sibling.
+ * `requiredSet`.
  *
  * No `${Model}$...` exclusion — nested args like `User$postsArgs` *must* be
- * rewritten too (that's the cross-file tenant-leak fix this refactor
- * enables).
+ * rewritten too. This is the `includes`-level sweep: it covers top-level
+ * action-args `where` AND nested include/select `where` in one pass.
  */
 function rewriteWhereReferences(
   sourceFile: SourceFile,
@@ -90,41 +143,32 @@ function rewriteWhereReferences(
   if (requiredSet.size === 0) return;
 
   for (const alias of sourceFile.getTypeAliases()) {
-    const typeNode = alias.getTypeNodeOrThrow();
-    if (!Node.isTypeLiteral(typeNode)) continue;
+    rewriteWhereOnAlias(alias, requiredSet, debug);
+  }
+}
 
-    for (const property of typeNode.getMembers()) {
-      if (!Node.isPropertySignature(property)) continue;
-      if (property.getName() !== "where") continue;
+/**
+ * Action-args-only variant: walk type aliases whose names match the
+ * `ACTION_ARGS_NAME_RE` allowlist (gated by `modelSet` to exclude arbitrary
+ * user types), and rewrite `where` on those aliases only. This is the
+ * `basic`-level sweep — covers top-level delegate action args (`findMany`,
+ * `findFirst`, `count`, `aggregate`, `groupBy`, `updateMany`,
+ * `updateManyAndReturn`, `deleteMany`) without touching nested include/select
+ * args.
+ */
+function rewriteActionArgsWhereReferences(
+  sourceFile: SourceFile,
+  requiredSet: Set<string>,
+  modelSet: Set<string>,
+  debug: boolean,
+) {
+  if (requiredSet.size === 0) return;
 
-      const propertyTypeNode = property.getTypeNode();
-      if (!propertyTypeNode) continue;
-      const typeText = propertyTypeNode.getText();
-
-      // Match `{Model}WhereInput` or `Prisma.{Model}WhereInput` exactly —
-      // no tolerance for surrounding unions/generics or a trailing `| null`
-      // (nested args' `where` is never nullable). Capture the optional
-      // `Prisma.` prefix so we can mirror it on the rewrite.
-      const match = WHERE_INPUT_RE.exec(typeText);
-      if (!match) continue;
-      const prefix = match[1] ?? "";
-      const targetModel = match[2];
-      if (!requiredSet.has(targetModel)) continue;
-
-      const newText = `${prefix}${targetModel}WhereInputStrict`;
-
-      if (debug) {
-        console.debug(
-          `rewrite ${alias.getName()}.where: ${typeText} -> ${newText}` +
-            (property.hasQuestionToken() ? " (drop ?)" : ""),
-        );
-      }
-
-      propertyTypeNode.replaceWithText(newText);
-      if (property.hasQuestionToken()) {
-        property.setHasQuestionToken(false);
-      }
-    }
+  for (const alias of sourceFile.getTypeAliases()) {
+    const match = ACTION_ARGS_NAME_RE.exec(alias.getName());
+    if (!match) continue;
+    if (!modelSet.has(match[1])) continue;
+    rewriteWhereOnAlias(alias, requiredSet, debug);
   }
 }
 
@@ -194,6 +238,71 @@ const RELATION_FILTER_PROPERTY_NAMES = new Set([
  * is a tenant-leak, so we rewrite to the Strict alias.
  */
 const TO_ONE_UPDATE_PROPERTY_NAMES = new Set(["delete", "disconnect"]);
+
+// ---------------------------------------------------------------------------
+// Action-args alias classification (Task 2 of strictness-levels plan).
+//
+// Surveyed `generated/prisma/models/*.ts` against the v1.1.0 fixture
+// (User/Post/Memo/Tag/UserPost). Every `{M}…Args` alias Prisma 7 emits fell
+// into one of three buckets:
+//
+//   (a) **Accepted** — top-level delegate action args whose `where`
+//       property is `Prisma.{M}WhereInput` (the relaxed input). These are
+//       the `basic`-level rewrite targets:
+//         {M}FindManyArgs
+//         {M}FindFirstArgs
+//         {M}FindFirstOrThrowArgs
+//         {M}CountArgs              (IntersectionType — Omit<FindMany, …>;
+//                                    `where` inherited via the Omit, so
+//                                    rewriting FindMany covers Count too.
+//                                    The alias body isn't a TypeLiteral so
+//                                    per-alias rewrite silently skips it —
+//                                    matches expectation.)
+//         {M}AggregateArgs
+//         {M}GroupByArgs
+//         {M}UpdateManyArgs
+//         {M}UpdateManyAndReturnArgs
+//         {M}DeleteManyArgs
+//
+//   (b) **Rejected — WhereUniqueInput-typed `where`** (primary-key lookups;
+//       non-goal at every level — re-requiring the tenant field on a PK
+//       lookup is redundant filtering, not a tenant-leak surface):
+//         {M}FindUniqueArgs
+//         {M}FindUniqueOrThrowArgs
+//         {M}UpdateArgs
+//         {M}UpsertArgs
+//         {M}DeleteArgs
+//
+//   (c) **Rejected — no `where` property** (mutation payloads + generic
+//       select/include helpers; nothing to rewrite):
+//         {M}CreateArgs
+//         {M}CreateManyArgs
+//         {M}CreateManyAndReturnArgs
+//         {M}DefaultArgs                       — generic select/include helper
+//         {M}CountOutputTypeDefaultArgs        — count-output select helper
+//
+//   (d) **Rejected — nested shapes** (handled by the full alias sweep at
+//       `includes` only; these are cross-alias references, not top-level
+//       action args):
+//         {M}${Rel}Args                        — nested include args (contains `$`,
+//                                                regex rejects via `[A-Za-z0-9_]+`)
+//         {M}CountOutputTypeCount{Rel}Args     — `where: {Rel}WhereInput` inside
+//                                                count-output nested include
+//
+// The regex below matches bucket (a) by name; the `modelSet.has(match[1])`
+// gate at the call site excludes arbitrary user-named types whose tail
+// happens to collide with the action suffixes (e.g. a user model literally
+// named `FooAggregate` → alias `FooAggregateArgs` → match[1] = "Foo" which
+// must be in modelSet to proceed).
+//
+// Future Prisma upgrades: re-run
+//   grep -hoE '^(export )?type [A-Z][A-Za-z0-9_]+Args\b' \
+//     generated/prisma/models/*.ts | sort -u
+// and reconfirm every emitted alias still lands in buckets (a)–(d). Any new
+// shape needs explicit classification here before this gate is extended.
+// ---------------------------------------------------------------------------
+const ACTION_ARGS_NAME_RE =
+  /^([A-Za-z0-9_]+)(FindMany|FindFirst|FindFirstOrThrow|Count|Aggregate|GroupBy|UpdateMany|UpdateManyAndReturn|DeleteMany)Args$/;
 
 /**
  * Match `(Prisma.)?{Model}WhereInput` exactly — no trailing `| null`. Used
@@ -458,18 +567,41 @@ export function rewriteWhereReferencesPass(args: {
   path: string;
   requiredSet: Set<string>;
   modelSet: Set<string>;
+  strictness: Strictness;
   debug: boolean;
 }) {
   const project = new Project();
   const sourceFile = project.addSourceFileAtPath(args.path);
 
-  rewriteWhereReferences(sourceFile, args.requiredSet, args.debug);
-  rewriteRelationFilterReferences(
-    sourceFile,
-    args.requiredSet,
-    args.modelSet,
-    args.debug,
-  );
+  // Level gating:
+  //   - `basic`     — action-args-only sweep.
+  //   - `relations` — action-args-only sweep + relation filters.
+  //   - `includes`  — full alias sweep + relation filters. The full sweep is
+  //     a strict superset of the action-args sweep (same `WHERE_INPUT_RE`
+  //     matcher, no alias-name gate), so running both at `includes` would
+  //     walk every matching property twice. Skip the action-args-only call
+  //     here — the second pass would be a no-op (property is already
+  //     `…WhereInputStrict` after the first, which no longer matches
+  //     `…WhereInput$`) but the ts-morph traversal itself still costs.
+  if (args.strictness === "includes") {
+    rewriteWhereReferences(sourceFile, args.requiredSet, args.debug);
+  } else {
+    rewriteActionArgsWhereReferences(
+      sourceFile,
+      args.requiredSet,
+      args.modelSet,
+      args.debug,
+    );
+  }
+
+  if (args.strictness !== "basic") {
+    rewriteRelationFilterReferences(
+      sourceFile,
+      args.requiredSet,
+      args.modelSet,
+      args.debug,
+    );
+  }
 
   sourceFile.saveSync();
 }

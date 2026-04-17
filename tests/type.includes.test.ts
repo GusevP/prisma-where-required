@@ -1,4 +1,4 @@
-// !!!this file is auto generated.!!! 
+// !!!this file is auto generated.!!!
 
 import type { PrismaClient, Prisma } from '../generated/prisma/client'
 

@@ -1,7 +1,7 @@
 {
   "name": "@gusevp/prisma-where-required",
-  "version": "1.1.0",
-  "description": "Make certain fields required in where clause for Prisma (Prisma 7 fork)",
+  "version": "2.0.0",
+  "description": "Make certain fields required in where clause for Prisma 7",
   "license": "MIT",
   "author": "GusevP",
   "contributors": [
@@ -28,8 +28,11 @@
     "build": "tsc",
     "prepare": "tsc",
     "generate:prisma": "prisma generate",
-    "generate:typeTestFile": "ts-node tests/generateTypeTestFile.ts",
-    "test": "npx prisma generate && tsc tests/*.test.ts --noEmit --esModuleInterop --moduleResolution node --target es2020 --strict --skipLibCheck",
+    "generate:typeTestFile": "ts-node tests/generateTypeTestFile.ts --level basic && ts-node tests/generateTypeTestFile.ts --level relations && ts-node tests/generateTypeTestFile.ts --level includes",
+    "test:basic": "npx prisma generate --schema=prisma/schema.basic.prisma && tsc tests/type.basic.test.ts --noEmit --esModuleInterop --moduleResolution node --target es2020 --strict --skipLibCheck",
+    "test:relations": "npx prisma generate --schema=prisma/schema.prisma && tsc tests/type.relations.test.ts --noEmit --esModuleInterop --moduleResolution node --target es2020 --strict --skipLibCheck",
+    "test:includes": "npx prisma generate --schema=prisma/schema.includes.prisma && tsc tests/type.includes.test.ts --noEmit --esModuleInterop --moduleResolution node --target es2020 --strict --skipLibCheck",
+    "test": "npm run test:basic && npm run test:relations && npm run test:includes",
     "lint": "eslint ./src"
   },
   "devDependencies": {
