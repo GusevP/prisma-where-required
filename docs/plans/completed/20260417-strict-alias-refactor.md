@@ -128,10 +128,10 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
 - Modify: `src/generator.ts`
 - Modify: `prisma/schema.prisma`
 
-- [ ] In `src/generator.ts`, parse `options.generator.config.requiredFields`: accept string or string[], normalize to `string[]`, trim each, drop empties, dedupe.
-- [ ] Refactor required-set collection into a pure helper `collectRequiredFields(dmmf, configFields): Map<string, string[]>` returning `{ modelName → required field names }` combining annotation ∪ (scalar fields ∩ configFields).
-- [ ] After collection, if `configFields` contains a name that no model has as a scalar, `logger.warn` listing the unused entries.
-- [ ] In `prisma/schema.prisma`:
+- [x] In `src/generator.ts`, parse `options.generator.config.requiredFields`: accept string or string[], normalize to `string[]`, trim each, drop empties, dedupe.
+- [x] Refactor required-set collection into a pure helper `collectRequiredFields(dmmf, configFields): Map<string, string[]>` returning `{ modelName → required field names }` combining annotation ∪ (scalar fields ∩ configFields).
+- [x] After collection, if `configFields` contains a name that no model has as a scalar, `logger.warn` listing the unused entries.
+- [x] In `prisma/schema.prisma`:
   - Add `requiredFields = ["organizationId"]` to `whereRequired` generator block.
   - Remove `/// @where-required` from `Post` (will now be enforced via config only).
   - Keep `User.organizationId /// @where-required` unchanged.
@@ -139,8 +139,8 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
   - Add `model Tag { id Int @id @default(autoincrement()); label String }` — negative control, no tenant scalar.
   - Add `model Memo { id Int @id @default(autoincrement()); content String; organizationId Int? /// @where-required; ownerId Int?; owner User? @relation(fields: [ownerId], references: [id]) }` — nullable required field + nullable relation.
   - Add inverse `memos Memo[]` to User.
-- [ ] Run `npm run generate:prisma` — must succeed. No convertor changes yet, so expect v0.1 behavior applied to an expanded schema.
-- [ ] Write a minimal precheck addition to `tests/generateTypeTestFile.ts`: generate a `prisma.tag.findMany({})` line (should compile — Tag is negative control). Regenerate tests and confirm `npm test` passes. This is the baseline-before-refactor green checkpoint.
+- [x] Run `npm run generate:prisma` — must succeed. No convertor changes yet, so expect v0.1 behavior applied to an expanded schema.
+- [x] Write a minimal precheck addition to `tests/generateTypeTestFile.ts`: generate a `prisma.tag.findMany({})` line (should compile — Tag is negative control). Regenerate tests and confirm `npm test` passes. This is the baseline-before-refactor green checkpoint.
 
 ### Task 2: Strict alias emission + global `where`-ref rewrite (merged old tasks 2+3)
 
@@ -149,15 +149,15 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
 - Modify: `src/generator.ts`
 - Modify: `tests/generateTypeTestFile.ts`
 
-- [ ] In `src/convertor.ts`, add `emitStrictAlias(sourceFile, modelName, fields, debug)`: reads each required field's type text from `{Model}WhereInput`'s PropertySignature; appends `export type {Model}WhereInputStrict = Omit<{Model}WhereInput, 'f1' | 'f2'> & { f1: <T1> | undefined; f2: <T2> | undefined }`.
-- [ ] Remove `removeQuestionTokenFromTargetFieldProperty` entirely.
-- [ ] Refactor `convert()` to accept a required-set (`Set<string>` of model names) in addition to the per-model fields map, so rewrites can filter cross-file references.
-- [ ] In `src/generator.ts`, orchestrate: first pass per model → `emitStrictAlias`; then single global pass over all model files → rewrite `where` references.
-- [ ] Replace `removeQuestionTokenFromWhereFieldProperty` with `rewriteWhereReferences(sourceFile, requiredSet, debug)`:
+- [x] In `src/convertor.ts`, add `emitStrictAlias(sourceFile, modelName, fields, debug)`: reads each required field's type text from `{Model}WhereInput`'s PropertySignature; appends `export type {Model}WhereInputStrict = Omit<{Model}WhereInput, 'f1' | 'f2'> & { f1: <T1> | undefined; f2: <T2> | undefined }`.
+- [x] Remove `removeQuestionTokenFromTargetFieldProperty` entirely.
+- [x] Refactor `convert()` to accept a required-set (`Set<string>` of model names) in addition to the per-model fields map, so rewrites can filter cross-file references.
+- [x] In `src/generator.ts`, orchestrate: first pass per model → `emitStrictAlias`; then single global pass over all model files → rewrite `where` references.
+- [x] Replace `removeQuestionTokenFromWhereFieldProperty` with `rewriteWhereReferences(sourceFile, requiredSet, debug)`:
   - Walk all type aliases (no `${Model}$` exclusion anymore).
   - For every `PropertySignature` named `where`: if type text matches `(Prisma\.)?({M})WhereInput` where M ∈ requiredSet, rewrite to `…Strict` and drop `?`.
-- [ ] Keep `removeQuestionTokenFromActionFuncProperty` unchanged (delegate params).
-- [ ] Extend `tests/generateTypeTestFile.ts`:
+- [x] Keep `removeQuestionTokenFromActionFuncProperty` unchanged (delegate params).
+- [x] Extend `tests/generateTypeTestFile.ts`:
   - Parameterize by `{ modelKey, requiredFields, negativeControl? }` — iterate over User, Post, UserPost, Memo, Tag.
   - Extend `targetActions` to include `aggregate`.
   - Parameterize the `updateMany` and `groupBy` blocks (currently hardcoded to `prisma.user`) into the same loop.
@@ -165,7 +165,7 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
   - Add for User: `_count: { select: { posts: { where: {} } } }` (@ts-expect-error inside `select` — actual shape will be `select: { posts: true, _count: { select: { posts: { where: {} } } } }`, confirm exact generated signature).
   - For Tag (negative control): `prisma.tag.findMany({})`, `prisma.tag.findMany({ where: {} })` both compile.
   - For Memo (nullable required): `prisma.memo.findMany({ where: {} })` fails; `prisma.memo.findMany({ where: { organizationId: null } })`, `{ where: { organizationId: 1 } }`, `{ where: { organizationId: undefined } }` all compile.
-- [ ] Run `npm test` — must pass.
+- [x] Run `npm test` — must pass.
 
 ### Task 3: Relation-filter + XOR scoping (aggressive)
 
@@ -173,23 +173,24 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
 - Modify: `src/convertor.ts`
 - Modify: `tests/generateTypeTestFile.ts`
 
-- [ ] **Pre-work (in-plan audit)**: grep `generated/prisma/models/*.ts` for `XOR<` occurrences; for each, classify as:
+- [x] **Pre-work (in-plan audit)**: grep `generated/prisma/models/*.ts` for `XOR<` occurrences; for each, classify as:
   - (a) inside a `{Model}WhereInput` property (relation filter) → **target**
   - (b) inside `{Model}WhereUniqueInput` → **non-target** (non-goal)
   - (c) inside nested update payload → **non-target**
-  Commit the classification as a comment in convertor.ts next to the matcher, so future maintainers can re-verify after Prisma upgrades.
-- [ ] Extend convertor with `rewriteRelationFilterReferences(sourceFile, requiredSet, debug)`:
-  - Match `PropertySignature` with name ∈ `{is, isNot, some, every, none}` whose type is `(Prisma\.)?({M})WhereInput` for M ∈ requiredSet → rewrite to `…Strict`, keep `?`.
-  - Match `PropertySignature` whose enclosing type alias is `{Model}WhereInput` (any model, not just required-model aliases) AND whose type is `(Prisma\.)?XOR<…, (Prisma\.)?({T})WhereInput>` for T ∈ requiredSet → rewrite the second XOR arg to `…Strict`. Keep `?`.
-- [ ] Extend test harness:
-  - `where: { posts: { some: {} } }` — @ts-expect-error (with User outer `organizationId: 1`). Repeat for `every`, `none`.
+  Classification committed as a comment block in `src/convertor.ts` next to the matcher. Bucket (a): `PostWhereInput.author` (Post.ts:235), `MemoWhereInput.owner` (Memo.ts:219, nullable with trailing `| null`). Bucket (b): `PostWhereUniqueInput.author` (Post.ts:258), `MemoWhereUniqueInput.owner` (Memo.ts:238) — excluded via enclosing-alias-name gate. Bucket (c): all `create`/`update`/`data` XORs in `…CreateNestedManyWithoutAuthorInput`, `…UpsertArgs`, `…UpdateManyWithWhereWithoutAuthorInput`, etc. — excluded by property name (not `is`/`isNot`/`some`/`every`/`none`) and enclosing alias (not `…WhereInput`).
+- [x] Extend convertor with `rewriteRelationFilterReferences(sourceFile, requiredSet, debug)`:
+  - Match `PropertySignature` with name ∈ `{is, isNot, some, every, none}` whose type is `(Prisma\.)?({M})WhereInput` for M ∈ requiredSet → rewrite to `…Strict`, keep `?`. Regex tolerates trailing `| null` for `UserNullableScalarRelationFilter.is/isNot`.
+  - Match `PropertySignature` whose enclosing type alias is `{Model}WhereInput` (any model, not just required-model aliases) AND whose type is `(Prisma\.)?XOR<…, (Prisma\.)?({T})WhereInput>` for T ∈ requiredSet → rewrite the second XOR arg to `…Strict`. Keep `?`. Regex tolerates trailing `| null` (nullable relations).
+- [x] Extend test harness:
+  - `where: { posts: { some: {} } }` — @ts-expect-error (with User outer `organizationId: 1`). Repeat for `every`, `none`. Also `memos: { some: {} }`.
   - Valid: `where: { organizationId: 1, posts: { some: { organizationId: 1 } } }`.
-  - Nullable relation filter (Memo.owner → User): from Memo's side, `where: { organizationId: 1, owner: { is: {} } }` — @ts-expect-error; valid: `{ is: { organizationId: 1 } }`. Also the XOR-direct form `{ owner: {} }` must require User.organizationId.
+  - Nullable relation filter (Memo.owner → User): from Memo's side, `where: { organizationId: 1, owner: { is: {} } }` — @ts-expect-error; valid: `{ is: { organizationId: 1 } }`. For the XOR-direct shorthand, the plan originally called for `{ owner: {} }` to fail — discovered during implementation that Prisma's own `XOR<T, U>` definition (`(Without<T,U> & U) | (Without<U,T> & T)`) accepts `{}` via the `UserScalarRelationFilter` branch since its fields are all optional, so truly-empty shorthand can't be made strict. Instead, the test asserts that naming a UserWhereInput-unique scalar (`{ owner: { name: "x" } }`) without organizationId fails — this confirms the XOR's second arg is the Strict alias. Use `is`/`isNot` for exhaustive coverage.
   - **Combinator permissiveness regression**:
     - `prisma.user.findMany({ where: { organizationId: 1, OR: [{ name: "a" }, { name: "b" }] } })` — compiles.
     - Same with `AND: [{ name: "a" }]` — compiles.
     - Same with `NOT: { name: "a" }` — compiles.
-- [ ] Run `npm test` — must pass.
+    - Also exercised for Post (OR) and Memo (AND) — combinators stay permissive across models.
+- [x] Run `npm test` — must pass.
 
 ### Task 4: README + version bump
 
@@ -197,7 +198,7 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
 - Modify: `README.md`
 - Modify: `package.json`
 
-- [ ] Update `README.md`:
+- [x] Update `README.md`:
   - Document `requiredFields` generator config with example.
   - Document the user-visible `{Model}WhereInputStrict` type (error messages reference it).
   - Call out that `AND/OR/NOT` combinators no longer need the `{ organizationId: undefined }` escape inside branches — before/after snippet.
@@ -205,14 +206,14 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
   - Add note: **`exactOptionalPropertyTypes: true`** incompatibility — since Strict uses `field: T | undefined` (not `field?: T`), downstream tsconfigs with that flag must pass the property explicitly even when skipping via `undefined`. Document as a known caveat.
   - Remove or revise the "Caution" paragraph about OR/AND/NOT awkwardness (now fixed).
   - Add the "Non-goals" table from this plan's Overview section.
-- [ ] Bump `package.json` version `0.1.0` → `0.2.0`.
-- [ ] (Optional) add `CHANGELOG.md` with v0.2.0 entry referencing the tenant-leak fix.
-- [ ] Run `npm run lint` — must pass.
+- [x] Bump `package.json` version `0.1.0` → `0.2.0`.
+- [x] (Optional) add `CHANGELOG.md` with v0.2.0 entry referencing the tenant-leak fix. [x] skipped — repo has no CHANGELOG convention; plan marks as optional.
+- [x] Run `npm run lint` — must pass.
 
 ### Task 5: Acceptance + archive plan
 
-- [ ] Clean build: `rm -rf generated && npm run generate:prisma && npm test` — must pass.
-- [ ] Spot-checks in `generated/prisma/models/User.ts`:
+- [x] Clean build: `rm -rf generated && npm run generate:prisma && npm test` — must pass.
+- [x] Spot-checks in `generated/prisma/models/User.ts`:
   - `UserWhereInputStrict` alias exists; `organizationId: Prisma.IntFilter<"User"> | number | undefined`.
   - `UserWhereInput` unchanged vs pristine Prisma output — `organizationId?: …` still optional.
   - `UserFindManyArgs.where: Prisma.UserWhereInputStrict` (no `?`).
@@ -220,16 +221,16 @@ fields(Model) = annotated(Model) ∪ (scalar_fields(Model) ∩ config.requiredFi
   - `User$memosArgs.where: Prisma.MemoWhereInputStrict` (no `?`).
   - `UserCountOutputTypeCountPostsArgs.where: Prisma.PostWhereInputStrict` (no `?`).
   - `UserCountOutputTypeCountMemosArgs.where: Prisma.MemoWhereInputStrict` (no `?`).
-- [ ] Spot-checks in `models/Post.ts`:
+- [x] Spot-checks in `models/Post.ts`:
   - `PostWhereInput.author?: Prisma.XOR<Prisma.UserScalarRelationFilter, Prisma.UserWhereInputStrict>` (XOR second arg rewritten).
   - `PostWhereUniqueInput.author?: Prisma.XOR<…, Prisma.UserWhereInput>` **unchanged** — non-goal boundary holds.
   - `PostListRelationFilter.some/every/none: Prisma.PostWhereInputStrict`.
   - `UserScalarRelationFilter.is/isNot: Prisma.UserWhereInputStrict`.
-- [ ] Spot-checks in `models/Memo.ts`:
+- [x] Spot-checks in `models/Memo.ts`:
   - `MemoWhereInputStrict` has `organizationId: Prisma.IntNullableFilter<…> | number | null | undefined`.
   - `MemoWhereInput.owner` relation filter type references `UserNullableScalarRelationFilter` (or equivalent Prisma 7 shape) with `UserWhereInputStrict` in the XOR.
-- [ ] Spot-check in `models/Tag.ts`: **no** `TagWhereInputStrict` export exists.
-- [ ] Move this plan: `mkdir -p docs/plans/completed && mv docs/plans/20260417-strict-alias-refactor.md docs/plans/completed/`.
+- [x] Spot-check in `models/Tag.ts`: **no** `TagWhereInputStrict` export exists.
+- [x] Move this plan: `mkdir -p docs/plans/completed && mv docs/plans/20260417-strict-alias-refactor.md docs/plans/completed/`.
 
 ## Post-Completion
 

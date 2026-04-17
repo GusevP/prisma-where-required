@@ -1,6 +1,6 @@
 {
   "name": "@gusevp/prisma-where-required",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Make certain fields required in where clause for Prisma (Prisma 7 fork)",
   "license": "MIT",
   "author": "GusevP",
