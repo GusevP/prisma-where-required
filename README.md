@@ -1,51 +1,143 @@
 # prisma-where-required
 
-A Prisma 7 generator that makes selected fields required in `where`
-clauses — primarily for multi-tenant scoping and soft-delete enforcement
-at the type level.
+[![npm version](https://img.shields.io/npm/v/@gusevp/prisma-where-required?logo=npm&color=CB3837)](https://www.npmjs.com/package/@gusevp/prisma-where-required)
+[![npm downloads](https://img.shields.io/npm/dm/@gusevp/prisma-where-required?logo=npm&color=CB3837)](https://www.npmjs.com/package/@gusevp/prisma-where-required)
+[![Prisma 7](https://img.shields.io/badge/Prisma-7-2D3748?logo=prisma&logoColor=white)](https://www.prisma.io/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![license](https://img.shields.io/npm/l/@gusevp/prisma-where-required?color=blue)](./LICENSE)
 
-Originally based on [@kz-d/prisma-where-required](https://github.com/kz-d/prisma-where-required).
-The core idea (patching Prisma's generated types to force a field into
-`where`) comes from kz-d's original work. This package has since been
-rewritten for Prisma 7's new `prisma-client` generator, re-architected
-around a `{Model}WhereInputStrict` sibling type (v1.1.0), and extended
-with configurable strictness levels (v2.0.0).
+**Turn a forgotten tenant filter into a compile error.**
 
-## What's new in v2.0.0
-- **`strictness` generator option.** New `basic` | `relations` | `includes`
-  knob gates how many `where` surfaces get rewritten. See Strictness levels
-  below.
-- **Breaking default change.** The default dropped from the v1.1.0
-  `includes` baseline to `relations`. Nested `include.*.where`,
-  `select.*.where`, and `_count.select.*.where` are no longer enforced by
-  default — opt back in with `strictness = "includes"`. See Migrating from
-  v1.1 to v2.0 below.
+A Prisma 7 generator that makes chosen fields — `organizationId`,
+`tenantId`, `deletedAt`, whatever you pick — **mandatory in every `where`
+clause**. If a query can read across tenants, it doesn't build.
 
-## What's new in v1.1.0
-- **Strict alias architecture.** Prisma's `{Model}WhereInput` is left pristine.
-  The generator emits a sibling `{Model}WhereInputStrict` that carries the
-  required-field constraint, and rewrites `where:` references to point at it.
-  In v2.0 the set of rewritten surfaces is controlled by `strictness` — see
-  the table below.
-- **Fixes a tenant leak.** Relation filters (`some / every / none / is /
-  isNot`), and nested `delete` / `disconnect` on to-one updates now enforce
-  required fields (at `strictness = "relations"` and above, the v2.0
-  default). Nested relation args (`include: { posts: { where: {} } }`,
-  `_count.select.posts.where`) also enforce required fields at
-  `strictness = "includes"`. In v0.1 they bypassed the check silently.
-- **OR / AND / NOT are permissive again.** Combinators continue to reference
-  the permissive `{Model}WhereInput`, so the `{ organizationId: undefined }`
-  workaround is no longer needed inside combinator branches.
-- **Schema-wide `requiredFields` config.** A new generator option applies a
-  required-field name to every model that has it as a scalar, additive with
-  `/// @where-required`.
+```ts
+// ❌ Type error: Property 'organizationId' is missing
+prisma.user.findMany({ where: { name: "alice" } })
+
+// ✅ Compiles
+prisma.user.findMany({ where: { organizationId: 1, name: "alice" } })
+```
+
+No runtime layer, no query middleware, no wrapper client — the generator
+emits extra TypeScript types next to Prisma's own and points `where:` at
+them. Zero runtime cost, zero behavior change. Delete the generator and
+everything goes back to normal.
+
+## Why
+
+Multi-tenancy and soft deletes are enforced by convention in most Prisma
+codebases: *"remember to always filter by `organizationId`"*. Convention
+fails silently — one missing filter in one query is a data leak that no
+test catches, because the query is perfectly valid SQL.
+
+This generator moves that convention into the type system, where forgetting
+it is loud and immediate.
+
+## Requirements
+
+- **Prisma 7** with the `prisma-client` generator provider
+- TypeScript (the enforcement is types-only)
+
+## Install
+
+```bash
+npm i -D @gusevp/prisma-where-required
+```
+
+## Setup
+
+**1. Register the generator** in `schema.prisma`:
+
+```prisma
+generator whereRequired {
+  provider = "prisma-where-required"
+}
+```
+
+The client output path is auto-discovered — no `nodeModulePath` needed.
+
+**2. Mark the required fields.** Two ways, freely mixable:
+
+*Per field* — annotate the column:
+
+```prisma
+model User {
+  id             Int    @id @default(autoincrement())
+  name           String
+  organizationId Int    /// @where-required
+}
+```
+
+*Schema-wide* — name the fields once; every model with a scalar of that
+name is enforced:
+
+```prisma
+generator whereRequired {
+  provider       = "prisma-where-required"
+  requiredFields = ["organizationId"]
+}
+```
+
+A name in `requiredFields` that matches no scalar anywhere emits a warning —
+handy for catching typos like `"organisationId"`.
+
+**3. Generate:**
+
+```bash
+npx prisma generate
+```
+
+## What you get
+
+```ts
+// @ts-expect-error — args are required
+prisma.user.findMany()
+
+// @ts-expect-error — where is required
+prisma.user.findMany({})
+
+// @ts-expect-error — organizationId is required
+prisma.user.findMany({ where: {} })
+
+// compiles
+prisma.user.findMany({ where: { organizationId: 1 } })
+```
+
+### The escape hatch
+
+Querying across all tenants is still possible — you just have to say so
+out loud:
+
+```ts
+prisma.user.findMany({
+  where: { organizationId: undefined }, // deliberate: no tenant filter
+})
+```
+
+That single explicit `undefined` is greppable in review, which is the whole
+point.
+
+### `OR` / `AND` / `NOT` stay permissive
+
+Combinator branches reference Prisma's original permissive input type, so
+they read naturally — only the outer `where` is strict:
+
+```ts
+prisma.user.findMany({
+  where: {
+    organizationId: 1,
+    OR: [{ name: "alice" }, { name: "bob" }], // no per-branch boilerplate
+  },
+})
+```
 
 ## Strictness levels
 
-In v2.0, the generator accepts a `strictness` option that controls how
-aggressively `where` surfaces are rewritten to `{Model}WhereInputStrict`:
+`strictness` controls how many `where` surfaces get the strict treatment:
 
-```
+```prisma
 generator whereRequired {
   provider   = "prisma-where-required"
   strictness = "relations" // "basic" | "relations" | "includes"
@@ -54,24 +146,24 @@ generator whereRequired {
 
 | Level | What it enforces |
 |---|---|
-| `basic` | Top-level action args only (`findMany`, `findFirst`, `count`, `aggregate`, `groupBy`, `updateMany`, `deleteMany`). |
-| `relations` *(default)* | `basic` + relation filters (`some` / `every` / `none` / `is` / `isNot` and the XOR-direct relation shorthand) + nested to-one `delete` / `disconnect`. |
-| `includes` | `relations` + every remaining `where: {Model}WhereInput` position — nested `include.*.where`, `select.*.where`, `_count.select.*.where`, and nested relation payload `upsert.where` / to-one `update.where`. Matches v1.1.0 behavior exactly. |
+| `basic` | Top-level action args only — `findMany`, `findFirst`, `count`, `aggregate`, `groupBy`, `updateMany`, `deleteMany`. |
+| **`relations`** *(default)* | `basic` + relation filters (`some` / `every` / `none` / `is` / `isNot`, plus the XOR-direct relation shorthand) + nested to-one `delete` / `disconnect`. |
+| `includes` | `relations` + every remaining `where` position — nested `include.*.where`, `select.*.where`, `_count.select.*.where`, nested relation payload `upsert.where` and to-one `update.where`. |
 
 One example per level:
 
 ```ts
-// Enforced at every level (basic / relations / includes):
+// basic and above:
 // @ts-expect-error — organizationId is required
 prisma.user.findMany({ where: {} })
 
-// Enforced at `relations` and above:
+// relations and above — blocks cross-tenant traversal:
 // @ts-expect-error — Post.organizationId is required on the related filter
 prisma.user.findMany({
   where: { organizationId: 1, posts: { some: {} } },
 })
 
-// Enforced at `includes` only:
+// includes only:
 // @ts-expect-error — nested include.where must carry organizationId
 prisma.user.findMany({
   where: { organizationId: 1 },
@@ -79,205 +171,25 @@ prisma.user.findMany({
 })
 ```
 
-Unknown values emit a warning and fall back to the default.
+An unrecognized value warns and falls back to the default.
 
-### Migrating from v1.1 to v2.0
+### Relation filters (`relations` and above)
 
-**Breaking change in v2.0:** the default `strictness` dropped from the
-v1.1.0 `includes` baseline to `relations`. Consumers that rely on
-enforcement of any nested `where` surface that was strict in v1.1.0 —
-`include.*.where`, `select.*.where`, `_count.select.*.where`, nested
-relation payload `upsert.where`, and to-one `update.where` — silently lose
-it on upgrade. Opt back in explicitly:
-
-```
-generator whereRequired {
-  provider   = "prisma-where-required"
-  strictness = "includes"
-}
-```
-
-Existing v1.1.0 consumers that upgrade without setting `strictness` will see
-their nested-include compile errors disappear. The top-level action-args and
-relation-filter layers continue to fire unchanged.
-
-## Overview
-prisma-where-required is a utility that enforces certain fields to be mandatory in the 'where' clause when using Prisma.
-This tool was primarily created with multi-tenant systems or to perform a soft delete in mind.
-
-Requires **Prisma 7** and the `prisma-client` generator provider.
-
-## Usage
-1. `npm i @gusevp/prisma-where-required -D`
-
-2. Add the following to your schema.prisma file:
-
-```
-generator whereRequired {
-  provider = "prisma-where-required"
-}
-```
-
-The generator auto-discovers the client's output path — no `nodeModulePath`
-is required (it was a v4/v5 artifact).
-
-3. Mark required fields. There are two ways; they are additive.
-
-**Per-field annotation** — add `/// @where-required` above the column:
-
-```
-model User {
-  id             Int    @id @default(autoincrement())
-  name           String
-  organizationId Int    /// @where-required
-}
-```
-
-**Schema-wide config** — declare one or more field names on the generator
-block. Every model that has a scalar with that exact name becomes enforced:
-
-```
-generator whereRequired {
-  provider       = "prisma-where-required"
-  requiredFields = ["organizationId"]
-}
-```
-
-If a name listed in `requiredFields` does not match any scalar in the
-schema, the generator emits a warning (useful for catching typos like
-`"organisationId"`). You can mix annotations and config freely.
-
-4. `npx prisma generate`
-
-After these steps, your code will display the following behaviour:
+`some`, `every`, `none`, `is`, `isNot` and the direct relation shorthand all
+route through the strict type of the *target* model:
 
 ```ts
-// @ts-expect-error args are required
-prisma.user.findMany()
-
-// @ts-expect-error where is required
-prisma.user.findMany({})
-
-// @ts-expect-error organizationId is required
-prisma.user.findMany({ where: {} })
-
-// compile ok
-prisma.user.findMany({ where: { organizationId: 1 } })
-```
-
-If you want to perform a search across all records for the mandatory field,
-**explicitly specify `undefined`**:
-
-```ts
+// ✅
 prisma.user.findMany({
-    where: { organizationId: undefined } // bypass the organizationId filter
+  where: { organizationId: 1, posts: { some: { organizationId: 1 } } },
 })
 ```
 
-## The `{Model}WhereInputStrict` type
+### Nested `delete` / `disconnect` (`relations` and above)
 
-The constraint lives on a generated sibling type. For each model with
-required fields, you get:
-
-```ts
-export type UserWhereInputStrict =
-  Omit<Prisma.UserWhereInput, 'organizationId'> & {
-    organizationId: Prisma.IntFilter<"User"> | number | undefined
-  }
-```
-
-Prisma's own `{Model}WhereInput` is untouched, so any code that references
-it directly (including Prisma's internal definitions) stays permissive.
-TypeScript error messages on `findMany`, `findFirst`, `count`, etc. will
-mention `UserWhereInputStrict` rather than `UserWhereInput` — this is the
-tenant-enforced variant.
-
-## OR / AND / NOT work naturally
-
-In v0.1.x, mutating `UserWhereInput` in place made required-ness viral
-across combinator branches, forcing a `{ organizationId: undefined }` in
-every `OR` / `AND` / `NOT` entry. In v1.1.0, combinators continue to
-reference the permissive `UserWhereInput`, so branches are free-form:
-
-```ts
-// v0.1 (ugly workaround required):
-prisma.user.findMany({
-  where: {
-    organizationId: 1,
-    OR: [
-      { organizationId: undefined, name: "alice" },
-      { organizationId: undefined, name: "bob" },
-    ],
-  },
-})
-
-// v1.1 (combinators are permissive):
-prisma.user.findMany({
-  where: {
-    organizationId: 1,
-    OR: [
-      { name: "alice" },
-      { name: "bob" },
-    ],
-  },
-})
-```
-
-The outer `where` is still strict — you can't drop `organizationId` from
-it. Only the combinator branches relax.
-
-## Relation filters enforce required fields
-
-*Applies at `strictness = "relations"` and above (the default).*
-
-`some`, `every`, `none`, `is`, `isNot`, and the XOR-direct relation
-shorthand (`{ author: {…} }` on a `…WhereInput`) all route through the
-`Strict` alias of the target model, so cross-tenant traversal is blocked:
-
-```ts
-// @ts-expect-error — Post.organizationId is required on the related filter
-prisma.user.findMany({
-  where: { organizationId: 1, posts: { some: {} } },
-})
-
-// compile ok
-prisma.user.findMany({
-  where: {
-    organizationId: 1,
-    posts: { some: { organizationId: 1 } },
-  },
-})
-```
-
-The same applies to nested `include` args and `_count.select.*.where`
-**when you pass an object** — but only at `strictness = "includes"`:
-
-```ts
-// @ts-expect-error
-prisma.user.findMany({
-  where: { organizationId: 1 },
-  include: { posts: { where: {} } },
-})
-
-// compile ok
-prisma.user.findMany({
-  where: { organizationId: 1 },
-  include: { posts: { where: { organizationId: 1 } } },
-})
-```
-
-The boolean shorthand (`include: { posts: true }`, `select: { posts: true }`,
-`_count: { select: { posts: true } }`) and the fluent accessor
-(`user.posts()`) are deliberately left permissive — see Non-goals below.
-
-## Nested `delete` / `disconnect` enforce required fields
-
-*Applies at `strictness = "relations"` and above (the default).*
-
-On to-one nested update payloads (e.g. `UserUpdateOneWithoutMemosNestedInput`),
-Prisma accepts `delete` and `disconnect` as either `true` or a `WhereInput`.
-The `WhereInput` branch routes through the `Strict` alias, so you can't
-delete or disconnect a related row with an under-filtered match:
+On to-one nested update payloads, Prisma accepts `delete` / `disconnect` as
+`true` or as a filter object. The filter branch is strict, so you can't
+detach a related row on an under-scoped match:
 
 ```ts
 // @ts-expect-error — owner is a User, organizationId required
@@ -286,68 +198,114 @@ prisma.memo.update({
   data: { owner: { delete: { name: "x" } } },
 })
 
-// compile ok
+// ✅ explicit filter
 prisma.memo.update({
   where: { id: 1, organizationId: 1 },
   data: { owner: { delete: { organizationId: 1, name: "x" } } },
 })
 
-// compile ok — the boolean shorthand is scoped by the outer tenant-filtered `where`
+// ✅ boolean shorthand — already scoped by the outer strict `where`
 prisma.memo.update({
   where: { id: 1, organizationId: 1 },
   data: { owner: { delete: true } },
 })
 ```
 
-List-relation `delete` / `disconnect` (which use `WhereUniqueInput`) remain
-permissive for the same reason as other `WhereUniqueInput` surfaces — see
-Non-goals below.
+## How it works
 
-## `exactOptionalPropertyTypes: true` caveat
-
-`{Model}WhereInputStrict` uses `field: T | undefined` rather than
-`field?: T` — the field is required at the type level and only its value
-can be `undefined`. If your downstream tsconfig enables
-`exactOptionalPropertyTypes: true`, you must pass the property explicitly.
-Applies wherever the Strict alias is in effect: action-args `where` at every
-level; relation filters and nested `delete` / `disconnect` at `relations`
-and above; nested `include` / `select` / `_count` `where` plus nested
-relation payload `upsert.where` / to-one `update.where` at `includes`.
+Prisma's `{Model}WhereInput` is left **completely untouched**. For each model
+with required fields the generator emits a sibling type:
 
 ```ts
-// Won't compile under exactOptionalPropertyTypes with strict alias —
-// the property must be present.
+export type UserWhereInputStrict =
+  Omit<Prisma.UserWhereInput, 'organizationId'> & {
+    organizationId: Prisma.IntFilter<"User"> | number | undefined
+  }
+```
+
+…then rewrites the `where:` positions selected by `strictness` to point at
+it. Anything referencing `UserWhereInput` directly — including Prisma's own
+internals and your existing helper types — keeps working unchanged.
+
+Practical consequence: TypeScript errors mention `UserWhereInputStrict`.
+That's the enforced variant, not a broken import.
+
+## Surfaces left permissive by design
+
+| Surface | Why |
+|---|---|
+| `{Model}WhereUniqueInput` | Unique lookups are primary-key-scoped already; requiring the tenant field would be redundant. |
+| `groupBy.having` (`ScalarWhereWithAggregatesInput`) | Operates on already-grouped rows — the outer `where` was strict. |
+| `{Model}ScalarWhereInput` (nested `updateMany`) | Not a common leak path. |
+| `cursor` | Uses `WhereUniqueInput`. |
+| `data` (create/update payloads) | Not a filter surface. |
+| Boolean relation reads — `include: { posts: true }`, `select: { posts: true }`, `_count: { select: { posts: true } }`, fluent `user.posts()` | Scoped through the parent's strict `where`. Assumes a related row's tenant column matches its parent's. If yours can diverge, filter explicitly: `include: { posts: { where: { organizationId: 1 } } }`. |
+| Nested `include.*.where`, `select.*.where`, `_count.select.*.where`, nested `upsert.where` / to-one `update.where` | Permissive at `basic` / `relations`; opt in with `strictness = "includes"`. |
+
+Found a case where one of these leaks for your setup? Open an issue.
+
+## Caveat: `exactOptionalPropertyTypes: true`
+
+The strict type declares `field: T | undefined`, not `field?: T` — the
+property must be *present*, only its value may be `undefined`. Under
+`exactOptionalPropertyTypes`, that means passing it explicitly:
+
+```ts
+// ✗ property must be present
 prisma.user.findMany({ where: {} })
 
-// Works — explicit undefined bypasses the filter.
+// ✓
 prisma.user.findMany({ where: { organizationId: undefined } })
 ```
 
-This matches the v0.1 escape-hatch behavior, just with a slightly stricter
-property-presence requirement under the tsconfig flag.
+Applies wherever the strict type is in effect for your `strictness` level.
 
-## Non-goals (surfaces deliberately NOT rewritten)
+## Upgrading from v1.1 to v2.0
 
-The `Strict` alias is applied to filter surfaces only. A few Prisma input
-types are intentionally left permissive:
+**Breaking:** the default strictness dropped from v1.1.0's `includes`
+behavior to `relations`. Nested `include.*.where`, `select.*.where`,
+`_count.select.*.where`, nested `upsert.where` and to-one `update.where`
+are no longer enforced unless you ask for them. Upgrading without setting
+`strictness` makes those compile errors quietly disappear.
 
-| Surface | Reason |
-|---|---|
-| `{Model}WhereUniqueInput` | Unique lookups are primary-key-scoped by definition; requiring the tenant field would force redundant filtering. |
-| `{Model}ScalarWhereWithAggregatesInput` (`groupBy.having`) | Operates on already-grouped aggregates; the outer `where` is strict, so tenant scoping has already been enforced. |
-| `{Model}ScalarWhereInput` (nested update payloads) | Used inside `updateMany` nested updates — not a common multi-tenant leak path. |
-| `cursor` (uses `WhereUniqueInput`) | Same as `WhereUniqueInput`. |
-| `data` (create/update payloads) | Not a filter surface. |
-| FK-scoped relation reads (`include: { posts: true }`, `select: { posts: true }`, `_count: { select: { posts: true } }`, fluent `user.posts()`) | These are scoped through the parent's tenant-filtered `where`. Assumes the data-integrity invariant that a related row's tenant column matches the parent's (e.g. `Post.organizationId` equals its `author.organizationId`). If your schema can have divergent tenant columns across related rows, pass an explicit filter: `include: { posts: { where: { organizationId: 1 } } }`. |
-| Nested `include.*.where`, `select.*.where`, `_count.select.*.where` (object form), plus nested relation payload `upsert.where` and to-one `update.where` — at `strictness = "basic"` or `"relations"` | Left permissive by default in v2.0. Opt in with `strictness = "includes"` to restore v1.1.0 enforcement. |
+Restore the old behavior explicitly:
 
-If you hit a case where one of these surfaces enables a tenant leak for
-your system, please open an issue.
+```prisma
+generator whereRequired {
+  provider   = "prisma-where-required"
+  strictness = "includes"
+}
+```
+
+Top-level action args and relation filters are unchanged.
+
+<details>
+<summary>Earlier releases</summary>
+
+**v1.1.0** — introduced the `{Model}WhereInputStrict` sibling-type
+architecture (v0.1 mutated `WhereInput` in place, which made required-ness
+viral through `OR` / `AND` / `NOT` and forced a
+`{ organizationId: undefined }` in every branch). It also closed a tenant
+leak: relation filters and nested to-one `delete` / `disconnect` silently
+bypassed the check in v0.1. Added the schema-wide `requiredFields` option.
+
+</details>
 
 ## Caution
 
-This is type surgery on generated Prisma output. It's additive — the
-package emits types alongside Prisma's own — but compatibility with
-future Prisma versions is not guaranteed without updates. Only types are
-affected, so opting out is as simple as removing the generator and
-re-running `prisma generate`.
+This is type surgery on generated Prisma output. It's additive — nothing of
+Prisma's is overwritten — but compatibility with future Prisma versions
+isn't guaranteed without updates. Only types are affected, so opting out is
+just removing the generator block and re-running `prisma generate`.
+
+## Credits
+
+Based on [@kz-d/prisma-where-required](https://github.com/kz-d/prisma-where-required)
+— the core idea of patching Prisma's generated types to force a field into
+`where` is kz-d's. This package has since been rewritten for Prisma 7's
+`prisma-client` generator, re-architected around the strict sibling type,
+and extended with strictness levels.
+
+## License
+
+[MIT](./LICENSE)
